@@ -1,0 +1,248 @@
+{
+  "projectType": "sdk-library",
+  "projectName": "ZIO",
+  "projectDescription": "A type-safe, composable library for async and concurrent programming in Scala",
+  "theme": "aspen",
+  "primaryColor": "#dcd0b4",
+  "lightColor": "#888676",
+  "darkColor": "#16120e",
+  "navigation": {
+    "tabs": [
+      {
+        "tab": "Documentation",
+        "groups": [
+          {
+            "group": "Get Started",
+            "pages": [
+              "introduction",
+              "quickstart",
+              "installation"
+            ]
+          },
+          {
+            "group": "Core Concepts",
+            "pages": [
+              "core/zio-effect",
+              "core/fibers",
+              "core/runtime",
+              "core/error-handling",
+              "core/resource-management"
+            ]
+          },
+          {
+            "group": "Concurrency",
+            "pages": [
+              "concurrency/fibers",
+              "concurrency/fiber-refs",
+              "concurrency/promise",
+              "concurrency/queue",
+              "concurrency/hub",
+              "concurrency/ref",
+              "concurrency/semaphore"
+            ]
+          },
+          {
+            "group": "Streaming",
+            "pages": [
+              "streaming/zstream",
+              "streaming/zsink",
+              "streaming/zpipeline",
+              "streaming/zchannel"
+            ]
+          },
+          {
+            "group": "STM (Software Transactional Memory)",
+            "pages": [
+              "stm/overview",
+              "stm/zstm",
+              "stm/tref",
+              "stm/tarray",
+              "stm/tmap",
+              "stm/tqueue"
+            ]
+          },
+          {
+            "group": "Services & Dependency Injection",
+            "pages": [
+              "services/zlayer",
+              "services/zenvironment",
+              "services/service-pattern"
+            ]
+          },
+          {
+            "group": "Testing",
+            "pages": [
+              "testing/overview",
+              "testing/assertions",
+              "testing/test-aspects",
+              "testing/property-testing",
+              "testing/test-services"
+            ]
+          },
+          {
+            "group": "Advanced Topics",
+            "pages": [
+              "advanced/schedule",
+              "advanced/scope",
+              "advanced/supervisor",
+              "advanced/metrics",
+              "advanced/tracing"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "API Reference",
+        "groups": [
+          {
+            "group": "Core",
+            "pages": [
+              "api/zio",
+              "api/zio-app",
+              "api/runtime",
+              "api/exit",
+              "api/cause"
+            ]
+          },
+          {
+            "group": "Data Types",
+            "pages": [
+              "api/chunk",
+              "api/fiber",
+              "api/fiber-ref",
+              "api/promise",
+              "api/queue",
+              "api/hub",
+              "api/ref",
+              "api/semaphore"
+            ]
+          },
+          {
+            "group": "Streams",
+            "pages": [
+              "api/zstream",
+              "api/zsink",
+              "api/zpipeline",
+              "api/zchannel"
+            ]
+          },
+          {
+            "group": "STM",
+            "pages": [
+              "api/zstm",
+              "api/tref",
+              "api/tarray",
+              "api/tmap",
+              "api/tqueue",
+              "api/tsemaphore"
+            ]
+          },
+          {
+            "group": "Services",
+            "pages": [
+              "api/zlayer",
+              "api/zenvironment",
+              "api/clock",
+              "api/console",
+              "api/random",
+              "api/system"
+            ]
+          },
+          {
+            "group": "Testing",
+            "pages": [
+              "api/test-spec",
+              "api/test-assertion",
+              "api/test-gen",
+              "api/test-aspect"
+            ]
+          },
+          {
+            "group": "Concurrent Data Structures",
+            "pages": [
+              "api/concurrent-map",
+              "api/concurrent-set",
+              "api/countdown-latch",
+              "api/cyclic-barrier",
+              "api/reentrant-lock"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "Guides",
+        "groups": [
+          {
+            "group": "Best Practices",
+            "pages": [
+              "guides/error-handling-patterns",
+              "guides/resource-safety",
+              "guides/testing-strategies",
+              "guides/performance-optimization"
+            ]
+          },
+          {
+            "group": "Migration",
+            "pages": [
+              "guides/migration/from-cats-effect",
+              "guides/migration/from-monix",
+              "guides/migration/from-futures"
+            ]
+          },
+          {
+            "group": "Ecosystem",
+            "pages": [
+              "guides/ecosystem/zio-http",
+              "guides/ecosystem/zio-json",
+              "guides/ecosystem/zio-config",
+              "guides/ecosystem/zio-kafka"
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "keyFeatures": [
+    "Type-safe asynchronous and concurrent programming",
+    "Lightweight fibers with high scalability",
+    "Composable error handling with typed errors",
+    "Resource-safe with automatic cleanup",
+    "Built-in dependency injection with ZLayer",
+    "Powerful streaming with ZStream",
+    "Software Transactional Memory (STM)",
+    "Comprehensive testing framework",
+    "Property-based testing with Gen",
+    "Retry and repeat with Schedule"
+  ],
+  "publicApiSurface": [
+    "ZIO[R, E, A] - Core effect type",
+    "ZIO.succeed/fail/attempt - Effect constructors",
+    "ZStream[R, E, A] - Streaming data type",
+    "ZSink[R, E, In, L, Z] - Stream consumer",
+    "ZPipeline[R, E, In, Out] - Stream transformer",
+    "ZSTM[R, E, A] - STM effect type",
+    "ZLayer[RIn, E, ROut] - Dependency injection",
+    "Fiber[E, A] - Lightweight thread",
+    "Ref[A] - Atomic reference",
+    "Queue[A] - Concurrent queue",
+    "Hub[A] - Publish-subscribe hub",
+    "Promise[E, A] - Async promise",
+    "Semaphore - Concurrency control",
+    "Schedule[R, In, Out] - Retry/repeat policies",
+    "Scope - Resource lifecycle management",
+    "ZIO.runtime - Runtime access",
+    "ZIO.service - Service access",
+    "Spec[R, E] - Test specification",
+    "Assertion[A] - Test assertions",
+    "Gen[R, A] - Property-based test generator",
+    "TestAspect - Test modifiers",
+    "TRef[A] - Transactional reference",
+    "TArray[A] - Transactional array",
+    "TMap[K, V] - Transactional map",
+    "TQueue[A] - Transactional queue",
+    "Clock - Time service",
+    "Console - Console I/O service",
+    "Random - Random number service",
+    "System - System properties service"
+  ]
+}
