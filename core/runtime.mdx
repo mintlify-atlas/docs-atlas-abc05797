@@ -1,0 +1,483 @@
+---
+title: 'Runtime'
+description: 'Understanding how ZIO effects are executed'
+icon: 'gears'
+---
+
+# Runtime
+
+A `Runtime[R]` is capable of executing tasks within an environment `R`. It bundles together the environment, thread pool, and execution configuration needed to run ZIO effects.
+
+## Overview
+
+The Runtime is the bridge between your pure ZIO descriptions and actual execution. It provides the machinery to:
+
+<CardGroup cols={2}>
+  <Card title="Execute Effects" icon="play">
+    Transform ZIO values into running computations
+  </Card>
+  <Card title="Provide Environment" icon="box">
+    Supply the required dependencies to effects
+  </Card>
+  <Card title="Manage Fibers" icon="network-wired">
+    Schedule and execute fibers on thread pools
+  </Card>
+  <Card title="Configure Behavior" icon="sliders">
+    Control runtime flags and execution parameters
+  </Card>
+</CardGroup>
+
+## The Runtime Type
+
+From the source code (`Runtime.scala:24-28`):
+
+```scala
+/**
+ * A `Runtime[R]` is capable of executing tasks within an environment `R`.
+ */
+trait Runtime[+R] {
+  def environment: ZEnvironment[R]
+  def fiberRefs: FiberRefs
+  def runtimeFlags: RuntimeFlags
+}
+```
+
+## Runtime Components
+
+### Environment
+
+The environment provides services required by effects:
+
+```scala
+val runtime: Runtime[Clock with Console] = ???
+val env: ZEnvironment[Clock with Console] = runtime.environment
+```
+
+### Fiber References
+
+Fiber-local state that's inherited by child fibers:
+
+```scala
+val refs: FiberRefs = runtime.fiberRefs
+```
+
+### Runtime Flags
+
+Control runtime behavior:
+
+```scala
+val flags: RuntimeFlags = runtime.runtimeFlags
+// Examples: interruption, logging, tracing
+```
+
+## Creating Runtimes
+
+### Default Runtime
+
+Most applications use the default runtime:
+
+```scala
+import zio._
+
+object MyApp extends ZIOAppDefault {
+  def run = 
+    for {
+      _ <- Console.printLine("Hello, World!")
+    } yield ()
+}
+```
+
+<Info>
+  `ZIOAppDefault` provides a default runtime with common services like Clock, Console, and Random.
+</Info>
+
+### Custom Runtime
+
+Create a runtime with custom configuration:
+
+```scala
+import zio._
+
+val customRuntime: Runtime[MyService] = Runtime(
+  ZEnvironment(MyService.live),
+  FiberRefs.empty,
+  RuntimeFlags.default
+)
+```
+
+### From Environment
+
+Build a runtime from an environment:
+
+```scala
+val runtime: Task[Runtime[Database]] = 
+  ZIO.runtime[Database]
+```
+
+## Executing Effects
+
+### Safe Execution
+
+Run effects safely from within ZIO:
+
+```scala
+val effect: Task[String] = 
+  for {
+    runtime <- ZIO.runtime[Any]
+    result  <- runtime.run(someEffect)
+  } yield result
+```
+
+### Unsafe Execution
+
+Run effects at the edge of your application:
+
+```scala
+import zio._
+import zio.Unsafe
+
+val program: Task[String] = ???
+
+// Synchronous execution
+val exit: Exit[Throwable, String] = 
+  Unsafe.unsafe { implicit unsafe =>
+    Runtime.default.unsafe.run(program)
+  }
+
+// Asynchronous execution (returns a fiber)
+val fiber: Fiber.Runtime[Throwable, String] = 
+  Unsafe.unsafe { implicit unsafe =>
+    Runtime.default.unsafe.fork(program)
+  }
+
+// Execute to Future
+val future: CancelableFuture[String] = 
+  Unsafe.unsafe { implicit unsafe =>
+    Runtime.default.unsafe.runToFuture(program)
+  }
+```
+
+<Warning>
+  Unsafe methods should only be used at application boundaries. They bypass ZIO's safety guarantees.
+</Warning>
+
+## Unsafe API Methods
+
+The runtime's unsafe API provides three key methods (`Runtime.scala:71-102`):
+
+### fork
+
+Executes an effect asynchronously, returning a fiber:
+
+```scala
+def fork[E, A](zio: ZIO[R, E, A]): Fiber.Runtime[E, A]
+```
+
+### run
+
+Executes an effect synchronously, blocking until complete:
+
+```scala
+def run[E, A](zio: ZIO[R, E, A]): Exit[E, A]
+```
+
+### runToFuture
+
+Executes an effect asynchronously, returning a cancelable future:
+
+```scala
+def runToFuture[E <: Throwable, A](zio: ZIO[R, E, A]): CancelableFuture[A]
+```
+
+## Runtime Configuration
+
+### Runtime Flags
+
+Control various aspects of execution:
+
+```scala
+import zio.RuntimeFlags
+
+// Enable/disable features
+val flags = RuntimeFlags.default
+val withLogging = RuntimeFlags.enable(flags)(RuntimeFlag.LogTracedEffects)
+val withoutInterruption = RuntimeFlags.disable(flags)(RuntimeFlag.Interruption)
+```
+
+<AccordionGroup>
+  <Accordion title="Common Runtime Flags">
+    - **Interruption**: Enable fiber interruption
+    - **CurrentFiber**: Track current fiber
+    - **LogTracedEffects**: Log traced effects
+    - **OpSupervision**: Enable operation supervision
+  </Accordion>
+</AccordionGroup>
+
+### Updating Flags
+
+Change runtime flags for a scope:
+
+```scala
+val withFlags: Task[Unit] = 
+  effect.withRuntimeFlags(
+    RuntimeFlags.enable(RuntimeFlag.LogTracedEffects)
+  )
+```
+
+## Execution Model
+
+### Fiber Scheduling
+
+ZIO uses a work-stealing scheduler:
+
+<Steps>
+  <Step title="Effect Submission">
+    Effects are submitted to the executor as fiber tasks
+  </Step>
+  <Step title="Work Distribution">
+    The scheduler distributes work across available threads
+  </Step>
+  <Step title="Cooperative Yielding">
+    Long-running effects yield periodically to maintain fairness
+  </Step>
+  <Step title="Async Resumption">
+    Async effects resume on the executor when their callbacks fire
+  </Step>
+</Steps>
+
+### Executors
+
+ZIO supports different executor types:
+
+```scala
+// Default executor for compute-bound work
+val compute: UIO[Executor] = ZIO.executor
+
+// Blocking executor for blocking operations
+val blocking: UIO[Executor] = ZIO.blockingExecutor
+
+// Custom executor
+val custom: Task[Unit] = 
+  effect.onExecutor(myCustomExecutor)
+```
+
+## ZIOApp Integration
+
+### ZIOAppDefault
+
+The simplest way to run ZIO applications:
+
+```scala
+import zio._
+
+object MyApp extends ZIOAppDefault {
+  def run = 
+    for {
+      name <- Console.readLine
+      _    <- Console.printLine(s"Hello, $name!")
+    } yield ()
+}
+```
+
+### ZIOApp with Environment
+
+Provide custom environment:
+
+```scala
+import zio._
+
+object MyApp extends ZIOApp {
+  type Environment = Database with Logging
+  
+  def bootstrap: ZLayer[Any, Any, Environment] = 
+    Database.live ++ Logging.live
+  
+  def run = 
+    for {
+      _ <- doWork
+    } yield ()
+}
+```
+
+### Custom ZIOApp
+
+Full control over runtime configuration:
+
+```scala
+import zio._
+
+object MyApp extends ZIOApp {
+  
+  override val bootstrap: ZLayer[Any, Any, Any] = 
+    Runtime.setExecutor(customExecutor) ++
+    Runtime.setBlockingExecutor(blockingExecutor)
+  
+  def run = program
+}
+```
+
+## Runtime Layers
+
+Configure runtime services with layers:
+
+```scala
+import zio._
+
+val runtimeLayer: ZLayer[Any, Nothing, Unit] = 
+  Runtime.setExecutor(customExecutor) ++
+  Runtime.addLogger(myLogger) ++
+  Runtime.enableRuntimeMetrics
+```
+
+## Platform-Specific Behavior
+
+ZIO's runtime adapts to different platforms:
+
+<Tabs>
+  <Tab title="JVM">
+    - Uses `ForkJoinPool` for default executor
+    - Provides true parallelism
+    - Supports blocking operations
+  </Tab>
+  <Tab title="Scala.js">
+    - Single-threaded execution
+    - Uses JavaScript event loop
+    - No blocking operations
+  </Tab>
+  <Tab title="Scala Native">
+    - Native threading support
+    - Efficient system integration
+  </Tab>
+</Tabs>
+
+## Performance Tuning
+
+### Executor Configuration
+
+```scala
+import java.util.concurrent._
+
+val customExecutor: Executor = 
+  Executor.fromExecutionContext(
+    ExecutionContext.fromExecutor(
+      new ForkJoinPool(
+        parallelism = Runtime.getRuntime.availableProcessors() * 2,
+        ForkJoinPool.defaultForkJoinWorkerThreadFactory,
+        null,
+        true
+      )
+    )
+  )
+```
+
+### Blocking Executor
+
+```scala
+val blockingExecutor: Executor = 
+  Executor.fromThreadPoolExecutor {
+    new ThreadPoolExecutor(
+      corePoolSize = 0,
+      maximumPoolSize = Int.MaxValue,
+      keepAliveTime = 60L,
+      TimeUnit.SECONDS,
+      new SynchronousQueue[Runnable]()
+    )
+  }
+```
+
+## Testing with Runtime
+
+### Test Runtime
+
+Use ZIO Test's runtime for testing:
+
+```scala
+import zio._
+import zio.test._
+
+object MySpec extends ZIOSpecDefault {
+  def spec = suite("MySpec")(
+    test("example") {
+      for {
+        result <- myEffect
+      } yield assertTrue(result == expected)
+    }
+  )
+}
+```
+
+### Custom Test Runtime
+
+Provide test services:
+
+```scala
+val testLayer: ULayer[TestClock with TestConsole] = 
+  TestClock.default ++ TestConsole.default
+
+val testEffect: UIO[TestResult] = 
+  myTest.provide(testLayer)
+```
+
+## Best Practices
+
+<Tip>
+  **Use ZIOAppDefault** for most applications. It provides a well-configured runtime out of the box.
+</Tip>
+
+<Tip>
+  **Avoid unsafe methods** in business logic. Reserve them for main methods and integration points.
+</Tip>
+
+<Tip>
+  **Configure executors carefully**. The default configuration works well for most cases.
+</Tip>
+
+<Warning>
+  **Don't block the default executor**. Use `ZIO.blocking` or a dedicated blocking executor for blocking operations.
+</Warning>
+
+## Common Patterns
+
+### Running in Tests
+
+```scala
+import zio._
+import zio.Unsafe
+
+val testResult: Exit[String, Int] = 
+  Unsafe.unsafe { implicit unsafe =>
+    Runtime.default.unsafe.run(
+      myEffect.provide(testLayer)
+    )
+  }
+```
+
+### Integration with Legacy Code
+
+```scala
+def legacyMethod(): Future[String] = {
+  val future = Unsafe.unsafe { implicit unsafe =>
+    Runtime.default.unsafe.runToFuture(
+      myZIOEffect
+    )
+  }
+  future
+}
+```
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="ZIO Effect" icon="wand-magic-sparkles" href="/core/zio-effect">
+    Learn about the effects that runtime executes
+  </Card>
+  <Card title="Fibers" icon="network-wired" href="/core/fibers">
+    Understand fiber scheduling and execution
+  </Card>
+  <Card title="Error Handling" icon="triangle-exclamation" href="/core/error-handling">
+    Handle errors during effect execution
+  </Card>
+  <Card title="Testing" icon="flask" href="/testing/overview">
+    Test ZIO applications with custom runtimes
+  </Card>
+</CardGroup>

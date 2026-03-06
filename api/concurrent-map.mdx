@@ -1,0 +1,391 @@
+---
+title: 'ConcurrentMap'
+description: 'Thread-safe concurrent map implementation'
+icon: 'table'
+---
+
+## Overview
+
+`ConcurrentMap[K, V]` is a thread-safe concurrent map implementation that wraps `java.util.concurrent.ConcurrentHashMap`. It provides a functional API for concurrent map operations with ZIO effects.
+
+## Creating a ConcurrentMap
+
+### empty
+
+Creates an empty `ConcurrentMap`.
+
+```scala
+def empty[K, V]: UIO[ConcurrentMap[K, V]]
+```
+
+**Example:**
+
+```scala
+import zio._
+import zio.concurrent._
+
+val program = for {
+  map <- ConcurrentMap.empty[String, Int]
+  _   <- map.put("key", 42)
+} yield ()
+```
+
+### make
+
+Creates a new `ConcurrentMap` initialized with the provided key-value pairs.
+
+```scala
+def make[K, V](pairs: (K, V)*): UIO[ConcurrentMap[K, V]]
+```
+
+**Example:**
+
+```scala
+val program = for {
+  map <- ConcurrentMap.make(
+    "one" -> 1,
+    "two" -> 2,
+    "three" -> 3
+  )
+  value <- map.get("two")
+} yield value // Some(2)
+```
+
+### fromIterable
+
+Creates a new `ConcurrentMap` initialized with the provided collection of key-value pairs.
+
+```scala
+def fromIterable[K, V](pairs: Iterable[(K, V)]): UIO[ConcurrentMap[K, V]]
+```
+
+**Example:**
+
+```scala
+val pairs = List("a" -> 1, "b" -> 2, "c" -> 3)
+val program = for {
+  map <- ConcurrentMap.fromIterable(pairs)
+  size <- map.toList.map(_.size)
+} yield size // 3
+```
+
+## Basic Operations
+
+### get
+
+Retrieves the value associated with the given key.
+
+```scala
+def get(key: K): UIO[Option[V]]
+```
+
+**Example:**
+
+```scala
+for {
+  map   <- ConcurrentMap.make("key" -> "value")
+  result <- map.get("key")
+} yield result // Some("value")
+```
+
+### put
+
+Adds a new key-value pair and optionally returns the previously bound value.
+
+```scala
+def put(key: K, value: V): UIO[Option[V]]
+```
+
+**Example:**
+
+```scala
+for {
+  map <- ConcurrentMap.empty[String, Int]
+  _   <- map.put("counter", 1)
+  old <- map.put("counter", 2)
+} yield old // Some(1)
+```
+
+### putAll
+
+Adds all new key-value pairs.
+
+```scala
+def putAll(keyValues: (K, V)*): UIO[Unit]
+```
+
+### putIfAbsent
+
+Adds a new key-value pair, unless the key is already bound to some other value.
+
+```scala
+def putIfAbsent(key: K, value: V): UIO[Option[V]]
+```
+
+**Example:**
+
+```scala
+for {
+  map <- ConcurrentMap.make("key" -> "original")
+  _   <- map.putIfAbsent("key", "new")
+  value <- map.get("key")
+} yield value // Some("original")
+```
+
+### remove
+
+Removes the entry for the given key, optionally returning the value associated with it.
+
+```scala
+def remove(key: K): UIO[Option[V]]
+def remove(key: K, value: V): UIO[Boolean]
+```
+
+**Example:**
+
+```scala
+for {
+  map <- ConcurrentMap.make("key" -> "value")
+  removed <- map.remove("key")
+} yield removed // Some("value")
+```
+
+### replace
+
+Replaces the entry for the given key only if it is mapped to some value.
+
+```scala
+def replace(key: K, value: V): UIO[Option[V]]
+def replace(key: K, oldValue: V, newValue: V): UIO[Boolean]
+```
+
+**Example:**
+
+```scala
+for {
+  map <- ConcurrentMap.make("key" -> "old")
+  success <- map.replace("key", "old", "new")
+  value <- map.get("key")
+} yield (success, value) // (true, Some("new"))
+```
+
+### clear
+
+Removes all elements.
+
+```scala
+def clear: UIO[Unit]
+```
+
+## Conditional Operations
+
+### compute
+
+Attempts to compute a mapping for the specified key and its current mapped value (or None if there is no current mapping).
+
+```scala
+def compute(key: K, remap: (K, Option[V]) => Option[V]): UIO[Option[V]]
+```
+
+**Example:**
+
+```scala
+for {
+  map <- ConcurrentMap.make("counter" -> 1)
+  _   <- map.compute("counter", (k, v) => v.map(_ + 1))
+  value <- map.get("counter")
+} yield value // Some(2)
+```
+
+### computeIfAbsent
+
+Computes a value for a non-existing key.
+
+```scala
+def computeIfAbsent(key: K, map: K => V): UIO[V]
+```
+
+**Example:**
+
+```scala
+for {
+  map <- ConcurrentMap.empty[String, Int]
+  value <- map.computeIfAbsent("key", _.length)
+} yield value // 3
+```
+
+### computeIfPresent
+
+Attempts to compute a new mapping of an existing key.
+
+```scala
+def computeIfPresent(key: K, remap: (K, V) => V): UIO[Option[V]]
+```
+
+## Query Operations
+
+### isEmpty
+
+Returns true if there are no elements in this map.
+
+```scala
+def isEmpty: UIO[Boolean]
+```
+
+### exists
+
+Tests whether a given predicate holds true for at least one element in a map.
+
+```scala
+def exists(p: (K, V) => Boolean): UIO[Boolean]
+```
+
+**Example:**
+
+```scala
+for {
+  map <- ConcurrentMap.make("a" -> 1, "b" -> 2)
+  hasEven <- map.exists((_, v) => v % 2 == 0)
+} yield hasEven // true
+```
+
+### forall
+
+Tests whether a predicate is satisfied by all elements of a map.
+
+```scala
+def forall(p: (K, V) => Boolean): UIO[Boolean]
+```
+
+### collectFirst
+
+Finds the first element of a map for which the partial function is defined and applies the function to it.
+
+```scala
+def collectFirst[B](pf: PartialFunction[(K, V), B]): UIO[Option[B]]
+```
+
+**Example:**
+
+```scala
+for {
+  map <- ConcurrentMap.make("a" -> 1, "b" -> 2, "c" -> 3)
+  result <- map.collectFirst {
+    case (k, v) if v > 1 => k.toUpperCase
+  }
+} yield result // Some("B") or Some("C")
+```
+
+## Filtering Operations
+
+### removeIf
+
+Removes all elements which satisfy the given predicate.
+
+```scala
+def removeIf(p: (K, V) => Boolean): UIO[Unit]
+```
+
+**Example:**
+
+```scala
+for {
+  map <- ConcurrentMap.make("a" -> 1, "b" -> 2, "c" -> 3)
+  _   <- map.removeIf((_, v) => v % 2 == 0)
+  remaining <- map.toList
+} yield remaining // List(("a", 1), ("c", 3))
+```
+
+### retainIf
+
+Removes all elements which do not satisfy the given predicate.
+
+```scala
+def retainIf(p: (K, V) => Boolean): UIO[Unit]
+```
+
+## Aggregate Operations
+
+### fold
+
+Folds the elements of a map using the given binary operator.
+
+```scala
+def fold[S](zero: S)(f: (S, (K, V)) => S): UIO[S]
+```
+
+**Example:**
+
+```scala
+for {
+  map <- ConcurrentMap.make("a" -> 1, "b" -> 2, "c" -> 3)
+  sum <- map.fold(0) { case (acc, (_, v)) => acc + v }
+} yield sum // 6
+```
+
+## Conversion Operations
+
+### toChunk
+
+Collects all entries into a chunk.
+
+```scala
+def toChunk: UIO[Chunk[(K, V)]]
+```
+
+### toList
+
+Collects all entries into a list.
+
+```scala
+def toList: UIO[List[(K, V)]]
+```
+
+**Example:**
+
+```scala
+for {
+  map <- ConcurrentMap.make("a" -> 1, "b" -> 2)
+  list <- map.toList
+} yield list // List(("a", 1), ("b", 2))
+```
+
+## Use Cases
+
+### Caching
+
+```scala
+class Cache[K, V](map: ConcurrentMap[K, V]) {
+  def getOrCompute(key: K)(compute: => UIO[V]): UIO[V] =
+    map.get(key).flatMap {
+      case Some(value) => ZIO.succeed(value)
+      case None => 
+        for {
+          value <- compute
+          _     <- map.put(key, value)
+        } yield value
+    }
+}
+```
+
+### Counters
+
+```scala
+for {
+  counters <- ConcurrentMap.empty[String, Int]
+  _ <- ZIO.foreachPar(1 to 100) { i =>
+    counters.compute("total", (_, v) => Some(v.getOrElse(0) + 1))
+  }
+  total <- counters.get("total")
+} yield total // Some(100)
+```
+
+## Thread Safety
+
+`ConcurrentMap` is thread-safe and can be safely accessed from multiple fibers concurrently. All operations are atomic and lock-free, making it suitable for high-performance concurrent applications.
+
+## See Also
+
+- [ConcurrentSet](/api/concurrent-set) - Thread-safe concurrent set
+- [Ref](/api/ref) - Atomic reference for single values
+- [TMap](/api/tmap) - Transactional map using STM

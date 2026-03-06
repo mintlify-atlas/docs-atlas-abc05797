@@ -1,0 +1,506 @@
+---
+title: Resource Safety
+description: Best practices for managing resources safely in ZIO
+---
+
+## Overview
+
+Resource safety ensures that resources like files, connections, and handles are properly acquired and released, even in the presence of errors or interruptions. ZIO provides powerful primitives for resource management.
+
+## The Resource Problem
+
+<Warning>
+Improper resource management leads to resource leaks, connection pool exhaustion, and system instability.
+</Warning>
+
+### Bad Practice: Manual Resource Management
+
+```scala
+import zio._
+import java.sql.Connection
+
+// DON'T: Manual management is error-prone
+def queryDatabase(sql: String): ZIO[Any, Throwable, List[String]] = 
+  ZIO.attempt {
+    val conn = getConnection() // What if this fails?
+    try {
+      val stmt = conn.createStatement()
+      try {
+        val rs = stmt.executeQuery(sql)
+        // What if processing fails?
+        processResults(rs)
+      } finally {
+        stmt.close() // What if this throws?
+      }
+    } finally {
+      conn.close() // This might not run on interruption!
+    }
+  }
+```
+
+## Pattern 1: Using ZIO.acquireRelease
+
+### Basic Resource Management
+
+```scala
+import zio._
+import java.sql.Connection
+
+// Good: Automatic resource cleanup
+def queryDatabase(sql: String): ZIO[Any, Throwable, List[String]] = 
+  ZIO.acquireRelease(
+    acquire = ZIO.attempt(getConnection())
+  )(
+    release = conn => ZIO.succeed(conn.close())
+  ).flatMap { conn =>
+    ZIO.attempt {
+      val stmt = conn.createStatement()
+      val rs = stmt.executeQuery(sql)
+      processResults(rs)
+    }
+  }
+```
+
+<Note>
+`acquireRelease` guarantees the release action runs, even on errors or interruption.
+</Note>
+
+### Nested Resources
+
+```scala
+import zio._
+import java.sql._
+
+// Better: Nested resource management
+def queryDatabase(sql: String): ZIO[Any, Throwable, List[String]] = 
+  ZIO.acquireRelease(
+    ZIO.attempt(getConnection())
+  )(conn => ZIO.succeed(conn.close())).flatMap { conn =>
+    ZIO.acquireRelease(
+      ZIO.attempt(conn.createStatement())
+    )(stmt => ZIO.succeed(stmt.close())).flatMap { stmt =>
+      ZIO.attempt {
+        val rs = stmt.executeQuery(sql)
+        processResults(rs)
+      }
+    }
+  }
+```
+
+## Pattern 2: Using Scope and ZIO.acquireRelease
+
+### Scoped Resources
+
+```scala
+import zio._
+
+// Create a scoped resource
+val managedConnection: ZIO[Scope, Throwable, Connection] = 
+  ZIO.acquireRelease(
+    ZIO.attempt(getConnection())
+  )(conn => ZIO.succeed(conn.close()))
+
+// Use the scoped resource
+val program: ZIO[Any, Throwable, List[String]] = 
+  ZIO.scoped {
+    for {
+      conn <- managedConnection
+      results <- ZIO.attempt(executeQuery(conn, "SELECT * FROM users"))
+    } yield results
+  } // Connection automatically closed here
+```
+
+<Tip>
+Use `ZIO.scoped` to create a scope where resources are automatically cleaned up at the end.
+</Tip>
+
+### Sharing Resources Across Operations
+
+```scala
+import zio._
+
+// Multiple operations sharing a resource
+val program: ZIO[Any, Throwable, (List[User], List[Order])] = 
+  ZIO.scoped {
+    for {
+      conn <- managedConnection
+      users <- fetchUsers(conn)
+      orders <- fetchOrders(conn)
+    } yield (users, orders)
+  } // Single connection used for both queries, then closed
+```
+
+## Pattern 3: Resource Pools
+
+### Creating a Connection Pool
+
+```scala
+import zio._
+import java.sql.Connection
+
+// Bad: Creating connections on demand
+def inefficientQuery(sql: String): ZIO[Any, Throwable, List[String]] = 
+  ZIO.scoped {
+    managedConnection.flatMap { conn =>
+      ZIO.attempt(executeQuery(conn, sql))
+    }
+  } // Creates and destroys a connection every time
+
+// Good: Using a connection pool
+trait ConnectionPool {
+  def withConnection[R, E, A](
+    f: Connection => ZIO[R, E, A]
+  ): ZIO[R, E, A]
+}
+
+object ConnectionPool {
+  def make(
+    url: String,
+    poolSize: Int
+  ): ZIO[Scope, Throwable, ConnectionPool] = {
+    for {
+      pool <- ZIO.acquireRelease(
+        ZIO.attempt(createPool(url, poolSize))
+      )(pool => ZIO.succeed(pool.close()))
+    } yield new ConnectionPool {
+      def withConnection[R, E, A](
+        f: Connection => ZIO[R, E, A]
+      ): ZIO[R, E, A] = 
+        ZIO.scoped {
+          ZIO.acquireRelease(
+            ZIO.attempt(pool.getConnection())
+          )(conn => ZIO.succeed(conn.close())).flatMap(f)
+        }
+    }
+  }
+
+  val layer: ZLayer[Any, Throwable, ConnectionPool] = 
+    ZLayer.scoped(make("jdbc:postgresql://localhost/db", 10))
+}
+
+// Usage
+val efficientQuery: ZIO[ConnectionPool, Throwable, List[String]] = 
+  ZIO.serviceWithZIO[ConnectionPool](_.withConnection { conn =>
+    ZIO.attempt(executeQuery(conn, "SELECT * FROM users"))
+  })
+```
+
+<Note>
+Connection pools reuse connections efficiently and limit concurrency.
+</Note>
+
+## Pattern 4: Interruption Safety
+
+### Uninterruptible Regions
+
+```scala
+import zio._
+
+// Bad: Critical section can be interrupted
+def transferMoney(from: Account, to: Account, amount: Int): ZIO[Any, Throwable, Unit] = 
+  for {
+    _ <- debit(from, amount)
+    _ <- credit(to, amount) // If interrupted here, money is lost!
+  } yield ()
+
+// Good: Protect critical sections
+def transferMoney(from: Account, to: Account, amount: Int): ZIO[Any, Throwable, Unit] = 
+  (for {
+    _ <- debit(from, amount)
+    _ <- credit(to, amount)
+  } yield ()).uninterruptible
+```
+
+<Warning>
+Use `uninterruptible` for critical sections where interruption would leave the system in an inconsistent state.
+</Warning>
+
+### Interruptible Cleanup
+
+```scala
+import zio._
+
+// Ensure cleanup can be interrupted if it hangs
+val safeResource: ZIO[Scope, Throwable, Resource] = 
+  ZIO.acquireRelease(
+    acquire = ZIO.attempt(openResource())
+  )(
+    release = resource => 
+      ZIO.attempt(resource.close())
+        .timeout(5.seconds)
+        .orDie // Force close after timeout
+  )
+```
+
+## Pattern 5: Finalizers and Ensuring
+
+### Adding Finalizers
+
+```scala
+import zio._
+
+// Ensure code runs regardless of success or failure
+val withCleanup: ZIO[Any, Throwable, Unit] = 
+  performOperation
+    .ensuring(
+      ZIO.succeed(println("Cleanup code runs always"))
+    )
+
+// Multiple finalizers run in reverse order
+val multipleCleanups: ZIO[Any, Throwable, Unit] = 
+  performOperation
+    .ensuring(cleanup1)
+    .ensuring(cleanup2)
+    .ensuring(cleanup3)
+  // Runs: cleanup3, then cleanup2, then cleanup1
+```
+
+### OnExit for Fine-Grained Control
+
+```scala
+import zio._
+
+val withExitHandling: ZIO[Any, Throwable, Unit] = 
+  performOperation.onExit {
+    case Exit.Success(_) => 
+      ZIO.succeed(println("Operation succeeded"))
+    case Exit.Failure(cause) if cause.isInterrupted => 
+      ZIO.succeed(println("Operation was interrupted"))
+    case Exit.Failure(cause) => 
+      ZIO.succeed(println(s"Operation failed: ${cause.prettyPrint}"))
+  }
+```
+
+<Tip>
+Use `onExit` when you need different cleanup logic based on how the effect completed.
+</Tip>
+
+## Pattern 6: Layer Resource Management
+
+### Resources as Services
+
+```scala
+import zio._
+
+// Define a service that wraps a resource
+trait Database {
+  def query(sql: String): ZIO[Any, Throwable, List[String]]
+}
+
+object Database {
+  // Layer automatically manages resource lifecycle
+  val live: ZLayer[Any, Throwable, Database] = 
+    ZLayer.scoped {
+      for {
+        conn <- ZIO.acquireRelease(
+          ZIO.attempt(getConnection())
+        )(conn => ZIO.succeed(conn.close()))
+      } yield new Database {
+        def query(sql: String): ZIO[Any, Throwable, List[String]] = 
+          ZIO.attempt(executeQuery(conn, sql))
+      }
+    }
+}
+
+// Usage: Resource is automatically managed
+val program: ZIO[Database, Throwable, List[String]] = 
+  ZIO.serviceWithZIO[Database](_.query("SELECT * FROM users"))
+
+val runnable: ZIO[Any, Throwable, List[String]] = 
+  program.provide(Database.live)
+```
+
+<Note>
+Layers are the idiomatic way to manage long-lived resources in ZIO applications.
+</Note>
+
+### Shared Resources with ZLayer
+
+```scala
+import zio._
+
+// Resources shared across the application
+val appLayers: ZLayer[Any, Throwable, Database with Cache with Metrics] = 
+  Database.live ++ Cache.live ++ Metrics.live
+
+// All services share the same resource instances
+val app: ZIO[Database with Cache, Throwable, Unit] = 
+  for {
+    data <- ZIO.serviceWithZIO[Database](_.query("SELECT * FROM users"))
+    _ <- ZIO.serviceWithZIO[Cache](_.set("users", data))
+  } yield ()
+
+val main: ZIO[Any, Throwable, Unit] = 
+  app.provide(appLayers)
+```
+
+## Pattern 7: File and Stream Resources
+
+### Safe File Operations
+
+```scala
+import zio._
+import zio.stream._
+import java.io._
+
+// Bad: Manual file handling
+def readFileBad(path: String): ZIO[Any, Throwable, String] = 
+  ZIO.attempt {
+    val reader = new BufferedReader(new FileReader(path))
+    try {
+      reader.lines().toArray.mkString("\n")
+    } finally {
+      reader.close()
+    }
+  }
+
+// Good: Using ZStream
+def readFileGood(path: String): ZIO[Any, Throwable, String] = 
+  ZStream
+    .fromFile(new File(path))
+    .via(ZPipeline.utf8Decode)
+    .runCollect
+    .map(_.mkString)
+  // File automatically closed
+```
+
+<Tip>
+Use `ZStream` for file operations - it handles resource management automatically.
+</Tip>
+
+### Processing Large Files
+
+```scala
+import zio._
+import zio.stream._
+import java.io.File
+
+// Process file line by line without loading into memory
+def processLargeFile(input: String, output: String): ZIO[Any, Throwable, Unit] = 
+  ZStream
+    .fromFile(new File(input))
+    .via(ZPipeline.utf8Decode)
+    .via(ZPipeline.splitLines)
+    .map(processLine)
+    .intersperse("\n")
+    .via(ZPipeline.utf8Encode)
+    .run(ZSink.fromFile(new File(output)))
+  // Both files automatically closed
+```
+
+## Pattern 8: Testing Resource Safety
+
+### Verifying Cleanup
+
+```scala
+import zio._
+import zio.test._
+
+object ResourceSpec extends ZIOSpecDefault {
+  def spec = suite("Resource Safety")(
+    test("resources are cleaned up on success") {
+      for {
+        ref <- Ref.make(false)
+        _ <- ZIO.scoped {
+          ZIO.acquireRelease(
+            ZIO.succeed(())
+          )(_ => ref.set(true)).flatMap(_ => ZIO.unit)
+        }
+        cleaned <- ref.get
+      } yield assertTrue(cleaned)
+    },
+    test("resources are cleaned up on failure") {
+      for {
+        ref <- Ref.make(false)
+        _ <- ZIO.scoped {
+          ZIO.acquireRelease(
+            ZIO.succeed(())
+          )(_ => ref.set(true)).flatMap(_ => ZIO.fail("error"))
+        }.ignore
+        cleaned <- ref.get
+      } yield assertTrue(cleaned)
+    },
+    test("resources are cleaned up on interruption") {
+      for {
+        ref <- Ref.make(false)
+        fiber <- ZIO.scoped {
+          ZIO.acquireRelease(
+            ZIO.succeed(())
+          )(_ => ref.set(true)).flatMap(_ => ZIO.never)
+        }.fork
+        _ <- fiber.interrupt
+        cleaned <- ref.get
+      } yield assertTrue(cleaned)
+    }
+  )
+}
+```
+
+<Note>
+Always test that resources are cleaned up under all exit conditions: success, failure, and interruption.
+</Note>
+
+## Pattern 9: Common Pitfalls
+
+### Pitfall 1: Leaking Resources in Parallel Operations
+
+```scala
+import zio._
+
+// Bad: Resources may leak if one acquisition fails
+val leaky: ZIO[Scope, Throwable, (Resource1, Resource2)] = 
+  for {
+    r1 <- acquireResource1 // If this succeeds...
+    r2 <- acquireResource2 // ...and this fails, r1 leaks!
+  } yield (r1, r2)
+
+// Good: Each resource independently managed
+val safe: ZIO[Scope, Throwable, (Resource1, Resource2)] = 
+  for {
+    r1 <- ZIO.acquireRelease(acquireResource1)(releaseResource1)
+    r2 <- ZIO.acquireRelease(acquireResource2)(releaseResource2)
+  } yield (r1, r2)
+```
+
+### Pitfall 2: Finalizers That Can Fail
+
+```scala
+import zio._
+
+// Bad: Finalizer can fail and throw
+val dangerousFinalizer: ZIO[Scope, Throwable, Resource] = 
+  ZIO.acquireRelease(
+    acquireResource
+  )(r => ZIO.attempt(r.close())) // Can fail!
+
+// Good: Finalizers should not fail
+val safeFinalizer: ZIO[Scope, Throwable, Resource] = 
+  ZIO.acquireRelease(
+    acquireResource
+  )(r => 
+    ZIO.attempt(r.close())
+      .catchAll(err => ZIO.logError(s"Cleanup failed: $err"))
+      .orDie
+  )
+```
+
+<Warning>
+Finalizers should never fail. Use `.orDie` or log and swallow errors in cleanup code.
+</Warning>
+
+## Best Practices Summary
+
+<Note>
+**Key Takeaways:**
+
+1. Always use `acquireRelease` or `ZIO.scoped` for resource management
+2. Use connection pools for expensive resources like database connections
+3. Protect critical sections with `uninterruptible`
+4. Use layers for long-lived application resources
+5. Prefer `ZStream` for file and streaming operations
+6. Ensure finalizers cannot fail - use `.orDie` if needed
+7. Test resource cleanup under all exit conditions
+8. Be careful with parallel resource acquisition
+9. Use `onExit` for exit-specific cleanup logic
+10. Never manage resources manually with try/finally
+</Note>

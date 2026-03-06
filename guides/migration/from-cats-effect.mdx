@@ -1,0 +1,642 @@
+---
+title: "Migrating from Cats Effect"
+description: "A comprehensive guide to migrating from Cats Effect to ZIO"
+icon: "right-left"
+---
+
+# Migrating from Cats Effect to ZIO
+
+This guide helps you migrate your Cats Effect applications to ZIO. Both libraries provide powerful abstractions for functional effect systems in Scala, but ZIO offers additional features like built-in dependency injection, simpler error handling, and a more comprehensive ecosystem.
+
+## Key Differences
+
+<AccordionGroup>
+  <Accordion title="Type Signatures">
+    Cats Effect uses `IO[A]` while ZIO uses `ZIO[R, E, A]` with explicit environment and error types.
+  </Accordion>
+  <Accordion title="Error Handling">
+    ZIO has a dedicated error channel (`E`) in its type signature, making error handling more explicit and type-safe.
+  </Accordion>
+  <Accordion title="Dependency Injection">
+    ZIO has built-in dependency injection with `ZLayer`, while Cats Effect typically relies on external libraries like distage or constructor-based DI.
+  </Accordion>
+  <Accordion title="Runtime">
+    Cats Effect uses `IOApp` while ZIO uses `ZIOAppDefault` or `ZIOApp` with more configuration options.
+  </Accordion>
+</AccordionGroup>
+
+## Type Mapping
+
+Here's how Cats Effect types map to ZIO types:
+
+| Cats Effect | ZIO Equivalent | Notes |
+|-------------|----------------|-------|
+| `IO[A]` | `Task[A]` or `ZIO[Any, Throwable, A]` | Simple effect with errors as Throwable |
+| `SyncIO[A]` | `UIO[A]` or `ZIO[Any, Nothing, A]` | Effect that cannot fail |
+| `Resource[IO, A]` | `ZIO[Scope, Throwable, A]` | Scoped resource management |
+| `Ref[IO, A]` | `Ref[A]` | Concurrent mutable reference |
+| `Deferred[IO, A]` | `Promise[Throwable, A]` | One-time settable promise |
+| `Queue[IO, A]` | `Queue[A]` | Concurrent queue |
+| `Semaphore[IO]` | `Semaphore` | Concurrency control |
+| `Stream[IO, A]` | `ZStream[Any, Throwable, A]` | Stream processing |
+
+## Basic Effect Creation
+
+<CodeGroup>
+```scala Cats Effect
+import cats.effect._
+
+// Pure value
+val pureValue: IO[Int] = IO.pure(42)
+
+// Delayed computation
+val delayed: IO[Int] = IO.delay {
+  println("Computing...")
+  42
+}
+
+// From Either
+val fromEither: IO[Int] = 
+  IO.fromEither(Right(42))
+
+// From Option
+val fromOption: IO[Int] = 
+  IO.fromOption(Some(42))(new Exception("None"))
+
+// Async operation
+val async: IO[Int] = IO.async_ { cb =>
+  // Some async operation
+  cb(Right(42))
+}
+```
+
+```scala ZIO
+import zio._
+
+// Pure value
+val pureValue: UIO[Int] = ZIO.succeed(42)
+
+// Delayed computation
+val delayed: Task[Int] = ZIO.attempt {
+  println("Computing...")
+  42
+}
+
+// From Either
+val fromEither: Task[Int] = 
+  ZIO.fromEither(Right(42))
+
+// From Option
+val fromOption: Task[Int] = 
+  ZIO.fromOption(Some(42)).orElseFail(new Exception("None"))
+
+// Async operation
+val async: Task[Int] = ZIO.async { cb =>
+  // Some async operation
+  cb(ZIO.succeed(42))
+}
+```
+</CodeGroup>
+
+## Error Handling
+
+<CodeGroup>
+```scala Cats Effect
+import cats.effect._
+import cats.syntax.all._
+
+val program: IO[String] = for {
+  result <- IO.delay(dangerousOperation())
+    .handleErrorWith { error =>
+      IO.delay(println(s"Error: $error")) *>
+      IO.pure("default")
+    }
+} yield result
+
+// Attempt (convert to Either)
+val attempted: IO[Either[Throwable, String]] = 
+  IO.delay(dangerousOperation()).attempt
+
+// Retry
+import cats.effect.std.Supervisor
+import scala.concurrent.duration._
+
+val retried: IO[String] = 
+  IO.delay(dangerousOperation())
+    .retryingOnAllErrors(
+      policy = RetryPolicies.limitRetries(3),
+      onError = (err, details) => IO.unit
+    )
+```
+
+```scala ZIO
+import zio._
+
+val program: Task[String] = for {
+  result <- ZIO.attempt(dangerousOperation())
+    .catchAll { error =>
+      Console.printLine(s"Error: $error").orDie *>
+      ZIO.succeed("default")
+    }
+} yield result
+
+// Attempt (convert to Either)
+val attempted: UIO[Either[Throwable, String]] = 
+  ZIO.attempt(dangerousOperation()).either
+
+// Retry with schedule
+val retried: Task[String] = 
+  ZIO.attempt(dangerousOperation())
+    .retry(Schedule.recurs(3))
+
+// Retry with exponential backoff
+val retriedWithBackoff: Task[String] = 
+  ZIO.attempt(dangerousOperation())
+    .retry(Schedule.exponential(1.second) && Schedule.recurs(5))
+```
+</CodeGroup>
+
+## Resource Management
+
+<CodeGroup>
+```scala Cats Effect
+import cats.effect._
+import java.io._
+
+def readFile(path: String): IO[String] = 
+  Resource.fromAutoCloseable(
+    IO.delay(new FileInputStream(path))
+  ).use { stream =>
+    IO.delay {
+      val reader = new BufferedReader(new InputStreamReader(stream))
+      Iterator.continually(reader.readLine())
+        .takeWhile(_ != null)
+        .mkString("\n")
+    }
+  }
+
+// Manual resource management
+def withResource[A, B](
+  acquire: IO[A]
+)(
+  release: A => IO[Unit]
+)(
+  use: A => IO[B]
+): IO[B] = 
+  Resource.make(acquire)(release).use(use)
+```
+
+```scala ZIO
+import zio._
+import java.io._
+
+def readFile(path: String): Task[String] = 
+  ZIO.acquireReleaseWith(
+    ZIO.attempt(new FileInputStream(path))
+  )(
+    stream => ZIO.succeed(stream.close())
+  ) { stream =>
+    ZIO.attempt {
+      val reader = new BufferedReader(new InputStreamReader(stream))
+      Iterator.continually(reader.readLine())
+        .takeWhile(_ != null)
+        .mkString("\n")
+    }
+  }
+
+// Using ZIO.scoped
+def readFileScoped(path: String): Task[String] = 
+  ZIO.scoped {
+    ZIO.fromAutoCloseable(ZIO.attempt(new FileInputStream(path))).flatMap { stream =>
+      ZIO.attempt {
+        val reader = new BufferedReader(new InputStreamReader(stream))
+        Iterator.continually(reader.readLine())
+          .takeWhile(_ != null)
+          .mkString("\n")
+      }
+    }
+  }
+```
+</CodeGroup>
+
+## Concurrency
+
+<CodeGroup>
+```scala Cats Effect
+import cats.effect._
+import cats.syntax.all._
+
+// Parallel execution
+val parallel: IO[(Int, String)] = (
+  IO.delay(compute1()),
+  IO.delay(compute2())
+).parMapN((a, b) => (a, b))
+
+// Race
+val raced: IO[Either[Int, String]] = 
+  IO.race(
+    IO.delay(compute1()),
+    IO.delay(compute2())
+  )
+
+// Fork (start fiber)
+val forked: IO[Int] = for {
+  fiber <- IO.delay(compute()).start
+  result <- fiber.join
+} yield result
+
+// Ref for shared state
+import cats.effect.std.Queue
+
+val program: IO[Unit] = for {
+  ref <- Ref.of[IO, Int](0)
+  _ <- ref.update(_ + 1)
+  value <- ref.get
+  _ <- IO.println(s"Value: $value")
+} yield ()
+```
+
+```scala ZIO
+import zio._
+
+// Parallel execution
+val parallel: Task[(Int, String)] = 
+  ZIO.collectAllPar(List(
+    ZIO.attempt(compute1()),
+    ZIO.attempt(compute2())
+  )).map { case List(a: Int, b: String) => (a, b) }
+
+// Or using zipPar
+val parallelZip: Task[(Int, String)] = 
+  ZIO.attempt(compute1()).zipPar(ZIO.attempt(compute2()))
+
+// Race
+val raced: Task[Either[Int, String]] = 
+  ZIO.attempt(compute1()).raceEither(ZIO.attempt(compute2()))
+
+// Fork (start fiber)
+val forked: Task[Int] = for {
+  fiber <- ZIO.attempt(compute()).fork
+  result <- fiber.join
+} yield result
+
+// Ref for shared state
+val program: Task[Unit] = for {
+  ref <- Ref.make(0)
+  _ <- ref.update(_ + 1)
+  value <- ref.get
+  _ <- Console.printLine(s"Value: $value")
+} yield ()
+```
+</CodeGroup>
+
+## Dependency Injection
+
+<CodeGroup>
+```scala Cats Effect
+import cats.effect._
+
+// Typically using constructor injection
+trait Database {
+  def query(sql: String): IO[List[String]]
+}
+
+class PostgresDatabase extends Database {
+  def query(sql: String): IO[List[String]] = 
+    IO.delay(/* execute query */)
+}
+
+trait UserService {
+  def getUser(id: Int): IO[User]
+}
+
+class UserServiceImpl(db: Database) extends UserService {
+  def getUser(id: Int): IO[User] = 
+    db.query(s"SELECT * FROM users WHERE id = $id")
+      .map(rows => parseUser(rows.head))
+}
+
+// Manual wiring
+val program: IO[User] = for {
+  db <- IO.pure(new PostgresDatabase)
+  service <- IO.pure(new UserServiceImpl(db))
+  user <- service.getUser(42)
+} yield user
+```
+
+```scala ZIO
+import zio._
+
+// Using ZLayer for dependency injection
+trait Database {
+  def query(sql: String): Task[List[String]]
+}
+
+class PostgresDatabase extends Database {
+  def query(sql: String): Task[List[String]] = 
+    ZIO.attempt(/* execute query */)
+}
+
+object Database {
+  val live: ZLayer[Any, Nothing, Database] =
+    ZLayer.succeed(new PostgresDatabase)
+}
+
+trait UserService {
+  def getUser(id: Int): Task[User]
+}
+
+class UserServiceImpl(db: Database) extends UserService {
+  def getUser(id: Int): Task[User] = 
+    db.query(s"SELECT * FROM users WHERE id = $id")
+      .map(rows => parseUser(rows.head))
+}
+
+object UserService {
+  val live: ZLayer[Database, Nothing, UserService] =
+    ZLayer.fromFunction(UserServiceImpl(_))
+  
+  // Convenience accessor
+  def getUser(id: Int): ZIO[UserService, Throwable, User] =
+    ZIO.serviceWithZIO[UserService](_.getUser(id))
+}
+
+// Automatic wiring
+val program: ZIO[Any, Throwable, User] = 
+  UserService.getUser(42)
+    .provide(
+      Database.live,
+      UserService.live
+    )
+```
+</CodeGroup>
+
+## Application Entry Point
+
+<CodeGroup>
+```scala Cats Effect
+import cats.effect._
+
+object MyApp extends IOApp {
+  def run(args: List[String]): IO[ExitCode] = {
+    val program = for {
+      _ <- IO.println("Hello, Cats Effect!")
+      _ <- doWork()
+    } yield ()
+    
+    program.as(ExitCode.Success)
+  }
+  
+  def doWork(): IO[Unit] = 
+    IO.delay(println("Working..."))
+}
+
+// With configuration
+object MyApp extends IOApp {
+  override def runtimeConfig = 
+    super.runtimeConfig.copy(
+      cpuStarvationCheckInterval = Duration.Inf
+    )
+  
+  def run(args: List[String]): IO[ExitCode] = ???
+}
+```
+
+```scala ZIO
+import zio._
+
+object MyApp extends ZIOAppDefault {
+  def run = {
+    val program = for {
+      _ <- Console.printLine("Hello, ZIO!")
+      _ <- doWork()
+    } yield ()
+    
+    program
+  }
+  
+  def doWork(): Task[Unit] = 
+    ZIO.attempt(println("Working..."))
+}
+
+// With configuration
+object MyApp extends ZIOApp {
+  override val bootstrap: ZLayer[Any, Any, Any] =
+    Runtime.setConfigProvider(ConfigProvider.defaultProvider)
+  
+  def run = ???
+}
+```
+</CodeGroup>
+
+## Streaming
+
+<CodeGroup>
+```scala Cats Effect
+import cats.effect._
+import fs2._
+
+// Create a stream
+val stream: Stream[IO, Int] = 
+  Stream.range(1, 100)
+
+// Transform stream
+val transformed: Stream[IO, Int] = 
+  stream
+    .filter(_ % 2 == 0)
+    .map(_ * 2)
+    .take(10)
+
+// Effectful operations
+val effectful: Stream[IO, Unit] = 
+  stream.evalMap { n =>
+    IO.println(s"Processing: $n")
+  }
+
+// Compile and run
+val result: IO[List[Int]] = 
+  stream.compile.toList
+
+// Resource-safe streaming
+val fileStream: Stream[IO, String] = 
+  Stream.resource(
+    Resource.fromAutoCloseable(
+      IO.delay(scala.io.Source.fromFile("data.txt"))
+    )
+  ).flatMap { source =>
+    Stream.fromIterator[IO](source.getLines(), 1024)
+  }
+```
+
+```scala ZIO
+import zio._
+import zio.stream._
+
+// Create a stream
+val stream: ZStream[Any, Nothing, Int] = 
+  ZStream.range(1, 100)
+
+// Transform stream
+val transformed: ZStream[Any, Nothing, Int] = 
+  stream
+    .filter(_ % 2 == 0)
+    .map(_ * 2)
+    .take(10)
+
+// Effectful operations
+val effectful: ZStream[Any, Throwable, Unit] = 
+  stream.mapZIO { n =>
+    Console.printLine(s"Processing: $n")
+  }
+
+// Run stream
+val result: Task[Chunk[Int]] = 
+  stream.runCollect
+
+// Resource-safe streaming
+val fileStream: ZStream[Any, Throwable, String] = 
+  ZStream.fromIteratorScoped(
+    ZIO.fromAutoCloseable(
+      ZIO.attempt(scala.io.Source.fromFile("data.txt"))
+    ).map(_.getLines())
+  )
+```
+</CodeGroup>
+
+## Testing
+
+<CodeGroup>
+```scala Cats Effect
+import cats.effect._
+import cats.effect.testing.scalatest.AsyncIOSpec
+import org.scalatest.matchers.should.Matchers
+import org.scalatest.freespec.AsyncFreeSpec
+
+class MyServiceSpec extends AsyncFreeSpec with AsyncIOSpec with Matchers {
+  "MyService" - {
+    "should return correct result" in {
+      val result = myService.compute(42)
+      result.asserting(_ shouldBe 84)
+    }
+    
+    "should handle errors" in {
+      val result = myService.computeWithError()
+      result.attempt.asserting(_.isLeft shouldBe true)
+    }
+  }
+}
+```
+
+```scala ZIO
+import zio._
+import zio.test._
+import zio.test.Assertion._
+
+object MyServiceSpec extends ZIOSpecDefault {
+  def spec = suite("MyService")(
+    test("should return correct result") {
+      for {
+        result <- myService.compute(42)
+      } yield assertTrue(result == 84)
+    },
+    
+    test("should handle errors") {
+      for {
+        result <- myService.computeWithError().exit
+      } yield assertTrue(result.isFailure)
+    }
+  )
+}
+```
+</CodeGroup>
+
+## Migration Strategy
+
+<Steps>
+  <Step title="Start with boundaries">
+    Begin by converting boundary functions (entry points, external APIs) rather than internal business logic.
+  </Step>
+  
+  <Step title="Use interop">
+    Use `zio-interop-cats` to run Cats Effect code within ZIO during migration:
+    ```scala
+    import zio.interop.catz._
+    
+    val catsIO: cats.effect.IO[Int] = cats.effect.IO.pure(42)
+    val zio: Task[Int] = catsIO.toZIO
+    ```
+  </Step>
+  
+  <Step title="Convert incrementally">
+    Migrate one module at a time, maintaining compatibility at module boundaries.
+  </Step>
+  
+  <Step title="Adopt ZLayer">
+    Once core logic is converted, introduce ZLayer for dependency injection to simplify wiring.
+  </Step>
+  
+  <Step title="Leverage ZIO features">
+    Take advantage of ZIO-specific features like built-in services, schedules, and metrics.
+  </Step>
+</Steps>
+
+## Common Patterns
+
+### Timeout Operations
+
+<CodeGroup>
+```scala Cats Effect
+import cats.effect._
+import scala.concurrent.duration._
+
+val timedOut: IO[String] = 
+  IO.delay(longRunningOperation())
+    .timeout(5.seconds)
+```
+
+```scala ZIO
+import zio._
+
+val timedOut: Task[String] = 
+  ZIO.attempt(longRunningOperation())
+    .timeout(5.seconds)
+```
+</CodeGroup>
+
+### Parallel Traversal
+
+<CodeGroup>
+```scala Cats Effect
+import cats.effect._
+import cats.syntax.all._
+
+val items: List[Int] = List(1, 2, 3, 4, 5)
+val results: IO[List[String]] = 
+  items.parTraverse(item => IO.delay(process(item)))
+```
+
+```scala ZIO
+import zio._
+
+val items: List[Int] = List(1, 2, 3, 4, 5)
+val results: Task[List[String]] = 
+  ZIO.foreachPar(items)(item => ZIO.attempt(process(item)))
+```
+</CodeGroup>
+
+## Additional Resources
+
+<CardGroup cols={2}>
+  <Card title="ZIO Documentation" icon="book" href="/core/zio-effect">
+    Learn more about ZIO core concepts
+  </Card>
+  <Card title="ZLayer Guide" icon="layer-group" href="/services/zlayer">
+    Master dependency injection with ZLayer
+  </Card>
+  <Card title="Error Handling" icon="triangle-exclamation" href="/core/error-handling">
+    Learn ZIO's error handling patterns
+  </Card>
+  <Card title="Testing Guide" icon="flask" href="/testing/overview">
+    Test your ZIO applications
+  </Card>
+</CardGroup>

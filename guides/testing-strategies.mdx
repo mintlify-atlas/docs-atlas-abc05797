@@ -1,0 +1,651 @@
+---
+title: Testing Strategies
+description: Best practices and patterns for testing ZIO applications
+---
+
+## Overview
+
+ZIO provides powerful testing capabilities through ZIO Test, including property-based testing, test aspects, and dependency injection for testing. This guide covers effective strategies for testing ZIO applications.
+
+## Setting Up ZIO Test
+
+### Basic Test Structure
+
+```scala
+import zio._
+import zio.test._
+
+object MySpec extends ZIOSpecDefault {
+  def spec = suite("My Test Suite")(
+    test("basic test") {
+      assertTrue(1 + 1 == 2)
+    },
+    test("effectful test") {
+      for {
+        value <- ZIO.succeed(42)
+      } yield assertTrue(value == 42)
+    }
+  )
+}
+```
+
+<Note>
+`ZIOSpecDefault` provides everything needed to write and run ZIO tests.
+</Note>
+
+## Pattern 1: Testing Pure Logic
+
+### Simple Assertions
+
+```scala
+import zio.test._
+
+// Bad: Manual assertion
+test("addition works") {
+  val result = 2 + 2
+  if (result == 4) ZIO.succeed(assertTrue(true))
+  else ZIO.fail("Addition failed")
+}
+
+// Good: Use assertion helpers
+test("addition works") {
+  val result = 2 + 2
+  assertTrue(result == 4)
+}
+
+// Even better: Use specific assertions
+test("list operations") {
+  val list = List(1, 2, 3, 4, 5)
+  assertTrue(
+    list.length == 5,
+    list.head == 1,
+    list.last == 5,
+    list.contains(3)
+  )
+}
+```
+
+<Tip>
+Use `assertTrue` for multiple assertions in a single test. All assertions are evaluated and reported.
+</Tip>
+
+### Custom Assertions
+
+```scala
+import zio.test._
+import zio.test.Assertion._
+
+test("using custom assertions") {
+  val user = User("Alice", 25, "alice@example.com")
+  
+  assert(user.name)(equalTo("Alice")) &&
+  assert(user.age)(isGreaterThan(18)) &&
+  assert(user.email)(matchesRegex(".*@.*\\..*"))
+}
+
+// Compose assertions
+test("composed assertions") {
+  val users = List(
+    User("Alice", 25, "alice@example.com"),
+    User("Bob", 30, "bob@example.com")
+  )
+  
+  assert(users)(
+    hasSize(equalTo(2)) &&
+    exists(hasField("name", _.name, equalTo("Alice")))
+  )
+}
+```
+
+## Pattern 2: Testing Effects
+
+### Testing Success Cases
+
+```scala
+import zio._
+import zio.test._
+
+def fetchUser(id: String): ZIO[Any, UserError, User] = ???
+
+test("fetchUser returns user for valid ID") {
+  for {
+    user <- fetchUser("123")
+  } yield assertTrue(
+    user.id == "123",
+    user.name.nonEmpty
+  )
+}
+```
+
+### Testing Failure Cases
+
+```scala
+import zio._
+import zio.test._
+
+test("fetchUser fails for invalid ID") {
+  for {
+    result <- fetchUser("").exit
+  } yield assertTrue(result match {
+    case Exit.Failure(cause) => 
+      cause.failureOption.contains(InvalidUserId(""))
+    case Exit.Success(_) => false
+  })
+}
+
+// Better: Use assertZIO
+test("fetchUser fails for invalid ID") {
+  assertZIO(fetchUser("").exit)(fails(equalTo(InvalidUserId(""))))
+}
+```
+
+<Note>
+Use `assertZIO` for testing effect outcomes. It's more concise than pattern matching on Exit.
+</Note>
+
+### Testing Interruption
+
+```scala
+import zio._
+import zio.test._
+
+test("operation can be interrupted") {
+  for {
+    fiber <- longRunningOperation.fork
+    _ <- TestClock.adjust(1.second)
+    _ <- fiber.interrupt
+    exit <- fiber.await
+  } yield assertTrue(exit.isInterrupted)
+}
+```
+
+## Pattern 3: Dependency Injection for Testing
+
+### Using Test Implementations
+
+```scala
+import zio._
+import zio.test._
+
+// Production service
+trait UserRepo {
+  def getUser(id: String): ZIO[Any, UserError, User]
+  def saveUser(user: User): ZIO[Any, UserError, Unit]
+}
+
+// Test implementation
+class InMemoryUserRepo(ref: Ref[Map[String, User]]) extends UserRepo {
+  def getUser(id: String): ZIO[Any, UserError, User] = 
+    ref.get.flatMap { users =>
+      ZIO.fromOption(users.get(id))
+        .orElseFail(UserNotFound(id))
+    }
+  
+  def saveUser(user: User): ZIO[Any, UserError, Unit] = 
+    ref.update(users => users + (user.id -> user))
+}
+
+object InMemoryUserRepo {
+  val layer: ZLayer[Any, Nothing, UserRepo] = 
+    ZLayer {
+      for {
+        ref <- Ref.make(Map.empty[String, User])
+      } yield new InMemoryUserRepo(ref)
+    }
+}
+
+// Test using the test implementation
+test("user service saves and retrieves users") {
+  val program = for {
+    repo <- ZIO.service[UserRepo]
+    user = User("123", "Alice", "alice@example.com")
+    _ <- repo.saveUser(user)
+    retrieved <- repo.getUser("123")
+  } yield assertTrue(retrieved == user)
+  
+  program.provide(InMemoryUserRepo.layer)
+}
+```
+
+<Tip>
+Create in-memory test implementations for external dependencies like databases and APIs.
+</Tip>
+
+### Using TestLayer
+
+```scala
+import zio._
+import zio.test._
+
+// Provide test layers for all tests in a suite
+object UserServiceSpec extends ZIOSpecDefault {
+  def spec = suite("UserService")(
+    test("creates new user") {
+      for {
+        service <- ZIO.service[UserService]
+        user <- service.createUser("Alice", "alice@example.com")
+      } yield assertTrue(user.name == "Alice")
+    },
+    test("finds existing user") {
+      for {
+        service <- ZIO.service[UserService]
+        _ <- service.createUser("Bob", "bob@example.com")
+        found <- service.findUser("Bob")
+      } yield assertTrue(found.isDefined)
+    }
+  ).provide(
+    UserService.live,
+    InMemoryUserRepo.layer,
+    // Other test dependencies
+  )
+}
+```
+
+## Pattern 4: Property-Based Testing
+
+### Using Generators
+
+```scala
+import zio.test._
+import zio.test.Gen._
+
+// Bad: Testing only specific values
+test("addition is commutative") {
+  assertTrue(2 + 3 == 3 + 2)
+}
+
+// Good: Test with many generated values
+test("addition is commutative") {
+  check(int, int) { (a, b) =>
+    assertTrue(a + b == b + a)
+  }
+}
+```
+
+<Note>
+Property-based testing checks your code with hundreds of generated test cases automatically.
+</Note>
+
+### Custom Generators
+
+```scala
+import zio.test._
+
+// Generate valid users
+val userGen: Gen[Any, User] = for {
+  name <- Gen.alphaNumericStringBounded(3, 20)
+  age <- Gen.int(18, 100)
+  email <- Gen.elements(
+    "alice@example.com",
+    "bob@test.com",
+    "charlie@demo.org"
+  )
+} yield User(name, age, email)
+
+test("user validation") {
+  check(userGen) { user =>
+    for {
+      result <- validateUser(user)
+    } yield assertTrue(result.isValid)
+  }
+}
+```
+
+### Shrinking
+
+```scala
+import zio.test._
+
+// When test fails, ZIO Test finds minimal failing case
+test("list reversal property") {
+  check(Gen.listOf(Gen.int)) { list =>
+    val reversed = list.reverse.reverse
+    assertTrue(reversed == list)
+  }
+} // If this fails, ZIO Test shrinks to smallest failing list
+```
+
+<Tip>
+ZIO Test automatically shrinks failing test cases to the minimal example, making debugging easier.
+</Tip>
+
+## Pattern 5: Test Aspects
+
+### Timeout and Retry
+
+```scala
+import zio.test._
+import zio.test.TestAspect._
+
+// Add timeout to prevent hanging tests
+test("fast operation") {
+  for {
+    _ <- slowOperation
+  } yield assertTrue(true)
+} @@ timeout(5.seconds)
+
+// Retry flaky tests
+test("flaky external API") {
+  for {
+    result <- callExternalAPI
+  } yield assertTrue(result.isSuccess)
+} @@ retryN(3)
+```
+
+### Conditional Execution
+
+```scala
+import zio.test._
+import zio.test.TestAspect._
+
+// Run only on specific platforms
+test("Unix-specific feature") {
+  // Test code
+  assertTrue(true)
+} @@ unix
+
+// Skip tests conditionally
+test("feature not yet implemented") {
+  // Test code
+  assertTrue(true)
+} @@ ignore
+
+// Run test N times
+test("non-deterministic behavior") {
+  // Test code
+  assertTrue(true)
+} @@ samples(100)
+```
+
+### Parallel Execution
+
+```scala
+import zio.test._
+import zio.test.TestAspect._
+
+suite("Independent Tests")(
+  test("test 1") { assertTrue(true) },
+  test("test 2") { assertTrue(true) },
+  test("test 3") { assertTrue(true) }
+) @@ parallel // All tests run concurrently
+```
+
+<Warning>
+Only use `@@ parallel` for tests that don't share mutable state.
+</Warning>
+
+## Pattern 6: Testing Time-Based Logic
+
+### Using TestClock
+
+```scala
+import zio._
+import zio.test._
+
+test("cache expires after TTL") {
+  for {
+    cache <- CacheService.make(ttl = 1.hour)
+    _ <- cache.set("key", "value")
+    value1 <- cache.get("key")
+    _ <- TestClock.adjust(30.minutes)
+    value2 <- cache.get("key")
+    _ <- TestClock.adjust(31.minutes)
+    value3 <- cache.get("key")
+  } yield assertTrue(
+    value1.contains("value"),
+    value2.contains("value"),
+    value3.isEmpty
+  )
+}
+```
+
+<Note>
+`TestClock` allows you to control time in tests without actual delays.
+</Note>
+
+### Testing Scheduled Operations
+
+```scala
+import zio._
+import zio.test._
+
+test("retry with exponential backoff") {
+  for {
+    ref <- Ref.make(0)
+    fiber <- ref.update(_ + 1)
+      .repeat(Schedule.exponential(1.second) && Schedule.recurs(3))
+      .fork
+    _ <- TestClock.adjust(1.second)  // First retry
+    count1 <- ref.get
+    _ <- TestClock.adjust(2.seconds) // Second retry
+    count2 <- ref.get
+    _ <- TestClock.adjust(4.seconds) // Third retry
+    count3 <- ref.get
+    _ <- fiber.await
+  } yield assertTrue(
+    count1 == 2,
+    count2 == 3,
+    count3 == 4
+  )
+}
+```
+
+## Pattern 7: Testing Concurrent Operations
+
+### Race Conditions
+
+```scala
+import zio._
+import zio.test._
+
+test("counter is thread-safe") {
+  for {
+    counter <- Ref.make(0)
+    _ <- ZIO.foreachPar(1 to 100)(_ => counter.update(_ + 1))
+    finalCount <- counter.get
+  } yield assertTrue(finalCount == 100)
+} @@ samples(100) // Run many times to catch race conditions
+```
+
+### Testing Fibers
+
+```scala
+import zio._
+import zio.test._
+
+test("background job processes items") {
+  for {
+    queue <- Queue.bounded[String](10)
+    ref <- Ref.make(List.empty[String])
+    fiber <- queue.take.flatMap(item => ref.update(item :: _))
+      .forever
+      .fork
+    _ <- queue.offer("item1")
+    _ <- queue.offer("item2")
+    _ <- TestClock.adjust(100.millis)
+    processed <- ref.get
+    _ <- fiber.interrupt
+  } yield assertTrue(processed.toSet == Set("item1", "item2"))
+}
+```
+
+<Tip>
+Use `TestClock.adjust` to allow asynchronous operations to complete in tests.
+</Tip>
+
+## Pattern 8: Testing Error Handling
+
+### Testing Error Recovery
+
+```scala
+import zio._
+import zio.test._
+
+test("service retries on transient failures") {
+  for {
+    attempts <- Ref.make(0)
+    service = new UserService {
+      def getUser(id: String): ZIO[Any, UserError, User] = 
+        attempts.updateAndGet(_ + 1).flatMap { count =>
+          if (count < 3) ZIO.fail(DatabaseError("Connection timeout"))
+          else ZIO.succeed(User(id, "Alice", "alice@example.com"))
+        }
+    }
+    result <- service.getUser("123")
+      .retry(Schedule.recurs(5))
+    finalAttempts <- attempts.get
+  } yield assertTrue(
+    result.id == "123",
+    finalAttempts == 3
+  )
+}
+```
+
+### Testing Error Transformation
+
+```scala
+import zio._
+import zio.test._
+
+test("errors are mapped to HTTP responses") {
+  val testCases = List(
+    (InvalidUserId("abc"), 400),
+    (UserNotFound("123"), 404),
+    (DatabaseError("timeout"), 500)
+  )
+  
+  ZIO.foreach(testCases) { case (error, expectedCode) =>
+    for {
+      response <- handleRequest(ZIO.fail(error))
+    } yield assertTrue(response.statusCode == expectedCode)
+  }.map(results => results.reduce(_ && _))
+}
+```
+
+## Pattern 9: Integration Testing
+
+### Testing with Real Dependencies
+
+```scala
+import zio._
+import zio.test._
+
+// Use test containers for real databases
+object IntegrationSpec extends ZIOSpecDefault {
+  def spec = suite("Integration Tests")(
+    test("database operations") {
+      for {
+        db <- ZIO.service[Database]
+        _ <- db.execute("CREATE TABLE users (id INT, name TEXT)")
+        _ <- db.execute("INSERT INTO users VALUES (1, 'Alice')")
+        result <- db.query("SELECT * FROM users")
+      } yield assertTrue(result.length == 1)
+    }
+  ).provide(
+    PostgresContainer.layer,
+    Database.live
+  ) @@ sequential // Integration tests run sequentially
+}
+```
+
+<Warning>
+Integration tests are slower. Use sparingly and rely mostly on unit tests with test doubles.
+</Warning>
+
+### Testing HTTP Endpoints
+
+```scala
+import zio._
+import zio.test._
+import zio.http._
+
+test("GET /users returns user list") {
+  for {
+    response <- routes.run(
+      Request.get(URL.root / "users")
+    )
+    body <- response.body.asString
+  } yield assertTrue(
+    response.status == Status.Ok,
+    body.contains("users")
+  )
+}.provide(
+  UserService.test,
+  InMemoryUserRepo.layer
+)
+```
+
+## Pattern 10: Test Organization
+
+### Nested Suites
+
+```scala
+import zio.test._
+
+object UserServiceSpec extends ZIOSpecDefault {
+  def spec = suite("UserService")(
+    suite("createUser")(
+      test("creates user with valid data") { ??? },
+      test("rejects invalid email") { ??? },
+      test("rejects duplicate username") { ??? }
+    ),
+    suite("updateUser")(
+      test("updates existing user") { ??? },
+      test("fails for non-existent user") { ??? }
+    ),
+    suite("deleteUser")(
+      test("deletes existing user") { ??? },
+      test("is idempotent") { ??? }
+    )
+  )
+}
+```
+
+### Shared Test Data
+
+```scala
+import zio._
+import zio.test._
+
+object UserServiceSpec extends ZIOSpecDefault {
+  val testUser = User("123", "Alice", "alice@example.com")
+  
+  val setupTestData: ZIO[UserRepo, UserError, Unit] = 
+    for {
+      repo <- ZIO.service[UserRepo]
+      _ <- repo.saveUser(testUser)
+    } yield ()
+  
+  def spec = suite("UserService")(
+    test("test with shared data") {
+      for {
+        _ <- setupTestData
+        result <- ZIO.serviceWithZIO[UserRepo](_.getUser("123"))
+      } yield assertTrue(result == testUser)
+    }
+  ).provide(InMemoryUserRepo.layer)
+}
+```
+
+<Tip>
+Extract common test setup into reusable helper methods.
+</Tip>
+
+## Best Practices Summary
+
+<Note>
+**Key Takeaways:**
+
+1. Use `ZIOSpecDefault` as the base for all test suites
+2. Prefer `assertTrue` and `assertZIO` for clear, concise assertions
+3. Create test implementations of services using in-memory storage
+4. Use dependency injection via layers for testable code
+5. Leverage property-based testing for algorithmic code
+6. Apply test aspects like `@@ timeout` and `@@ parallel` appropriately
+7. Use `TestClock` for testing time-dependent logic
+8. Test error handling, recovery, and edge cases thoroughly
+9. Keep integration tests separate and use test containers
+10. Organize tests in nested suites by feature or method
+11. Run tests in parallel when possible, sequential when needed
+12. Use generators and shrinking to find edge cases automatically
+</Note>

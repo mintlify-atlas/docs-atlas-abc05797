@@ -1,0 +1,322 @@
+---
+title: "ZIOApp & ZIOAppDefault"
+description: "Entry points for ZIO applications"
+---
+
+## ZIOApp
+
+`ZIOApp` is an entry point for a ZIO application that allows sharing layers between applications. For a simpler version that uses the default ZIO environment, see `ZIOAppDefault`.
+
+### Type Definition
+
+```scala
+trait ZIOApp extends ZIOAppPlatformSpecific with ZIOAppVersionSpecific {
+  type Environment
+  
+  def bootstrap: ZLayer[ZIOAppArgs, Any, Environment]
+  def run: ZIO[Environment with ZIOAppArgs with Scope, Any, Any]
+}
+```
+
+### Type Parameters
+
+<ParamField path="Environment" type="type">
+  The environment type required by the application. This is an abstract type member that must be defined by implementations.
+</ParamField>
+
+### Methods
+
+#### bootstrap
+
+```scala
+def bootstrap: ZLayer[ZIOAppArgs, Any, Environment]
+```
+
+A layer that manages the acquisition and release of services necessary for the application to run.
+
+<ResponseField name="return" type="ZLayer[ZIOAppArgs, Any, Environment]">
+  A layer that provides the application's environment
+</ResponseField>
+
+#### run
+
+```scala
+def run: ZIO[Environment with ZIOAppArgs with Scope, Any, Any]
+```
+
+The main function of the application, which can access the command-line arguments through the `ZIOAppArgs` service. If the provided effect fails for any reason, the cause will be logged, and the exit code of the application will be non-zero. Otherwise, the exit code will be zero.
+
+<ResponseField name="return" type="ZIO[Environment with ZIOAppArgs with Scope, Any, Any]">
+  The main effect to execute
+</ResponseField>
+
+#### gracefulShutdownTimeout
+
+```scala
+def gracefulShutdownTimeout: Duration = Duration.Infinity
+```
+
+The time that the application will wait for finalizers to run before exiting.
+
+**Note:** This is currently used only for JVM & ScalaNative applications.
+
+<ResponseField name="return" type="Duration">
+  The timeout duration (defaults to `Duration.Infinity`)
+</ResponseField>
+
+#### runtime
+
+```scala
+def runtime: Runtime[Any] = Runtime.default
+```
+
+The runtime used to execute the application.
+
+<ResponseField name="return" type="Runtime[Any]">
+  The runtime (defaults to `Runtime.default`)
+</ResponseField>
+
+#### getArgs
+
+```scala
+def getArgs: ZIO[ZIOAppArgs, Nothing, Chunk[String]]
+```
+
+A helper function to obtain access to the command-line arguments of the application. You may use this helper function inside your `run` function.
+
+<ResponseField name="return" type="ZIO[ZIOAppArgs, Nothing, Chunk[String]]">
+  Effect producing the command-line arguments
+</ResponseField>
+
+**Example:**
+```scala
+for {
+  args <- getArgs
+  _    <- Console.printLine(s"Arguments: ${args.mkString(", ")}")
+} yield ()
+```
+
+#### exit
+
+```scala
+def exit(code: ExitCode): UIO[Unit]
+```
+
+A helper function to exit the application with the specified exit code.
+
+<ParamField path="code" type="ExitCode">
+  The exit code to use
+</ParamField>
+
+### Operators
+
+#### `<>` Operator
+
+```scala
+def <>(that: ZIOApp): ZIOApp
+```
+
+Composes this `ZIOApp` with another `ZIOApp`, to yield an application that executes the logic of both applications in parallel.
+
+<ParamField path="that" type="ZIOApp">
+  The other application to compose with
+</ParamField>
+
+**Example:**
+```scala
+val combinedApp = app1 <> app2
+```
+
+### Companion Object
+
+#### apply
+
+```scala
+def apply[R](
+  run0: ZIO[R with ZIOAppArgs with Scope, Any, Any],
+  bootstrap0: ZLayer[ZIOAppArgs, Any, R]
+)(implicit tagged: EnvironmentTag[R]): ZIOApp
+```
+
+Creates a `ZIOApp` from an effect, which can consume the arguments of the program, as well as a bootstrap layer.
+
+<ParamField path="run0" type="ZIO[R with ZIOAppArgs with Scope, Any, Any]">
+  The main effect to execute
+</ParamField>
+
+<ParamField path="bootstrap0" type="ZLayer[ZIOAppArgs, Any, R]">
+  The bootstrap layer
+</ParamField>
+
+**Example:**
+```scala
+val app = ZIOApp(
+  run0 = Console.printLine("Hello, World!"),
+  bootstrap0 = ZLayer.empty
+)
+```
+
+---
+
+## ZIOAppDefault
+
+`ZIOAppDefault` is the entry point for a simple ZIO application that uses the default environment.
+
+### Type Definition
+
+```scala
+trait ZIOAppDefault extends ZIOApp {
+  type Environment = Any
+  
+  val bootstrap: ZLayer[ZIOAppArgs, Any, Any] = ZLayer.empty
+  val environmentTag: EnvironmentTag[Any] = EnvironmentTag[Any]
+}
+```
+
+### Usage
+
+`ZIOAppDefault` is designed to be the simplest way to create a ZIO application. You only need to implement the `run` method.
+
+**Example:**
+```scala
+import zio._
+
+object MyApp extends ZIOAppDefault {
+  def run = 
+    for {
+      _    <- Console.printLine("Hello! What is your name?")
+      name <- Console.readLine
+      _    <- Console.printLine(s"Hello, $name, good to meet you!")
+    } yield ()
+}
+```
+
+### Methods
+
+#### run
+
+```scala
+def run: ZIO[Any with ZIOAppArgs with Scope, Any, Any]
+```
+
+The main function of the application. Since `Environment = Any`, no specific environment services are required beyond the built-in ones.
+
+<ResponseField name="return" type="ZIO[Any with ZIOAppArgs with Scope, Any, Any]">
+  The main effect to execute
+</ResponseField>
+
+### Companion Object
+
+#### apply
+
+```scala
+def apply(
+  run0: ZIO[ZIOAppArgs, Any, Any]
+): ZIOAppDefault
+```
+
+Creates a `ZIOAppDefault` from an effect.
+
+<ParamField path="run0" type="ZIO[ZIOAppArgs, Any, Any]">
+  The main effect to execute
+</ParamField>
+
+**Example:**
+```scala
+val app = ZIOAppDefault(
+  Console.printLine("Hello, World!")
+)
+```
+
+---
+
+## ZIOAppArgs
+
+`ZIOAppArgs` is a service that provides access to command-line arguments.
+
+### Methods
+
+```scala
+def getArgs: ZIO[ZIOAppArgs, Nothing, Chunk[String]]
+```
+
+Retrieves the command-line arguments as a `Chunk[String]`.
+
+**Example:**
+```scala
+object MyApp extends ZIOAppDefault {
+  def run = 
+    for {
+      args <- ZIOAppArgs.getArgs
+      _    <- Console.printLine(s"Received ${args.length} arguments")
+      _    <- ZIO.foreach(args)(arg => Console.printLine(s"  - $arg"))
+    } yield ()
+}
+```
+
+---
+
+## Complete Example
+
+### Simple Application
+
+```scala
+import zio._
+
+object SimpleApp extends ZIOAppDefault {
+  def run =
+    Console.printLine("Hello, World!")
+}
+```
+
+### Application with Arguments
+
+```scala
+import zio._
+
+object ArgsApp extends ZIOAppDefault {
+  def run = 
+    for {
+      args <- getArgs
+      _    <- args.headOption match {
+        case Some(name) => Console.printLine(s"Hello, $name!")
+        case None       => Console.printLine("Hello, stranger!")
+      }
+    } yield ()
+}
+```
+
+### Application with Custom Environment
+
+```scala
+import zio._
+
+trait UserService {
+  def greet(name: String): UIO[Unit]
+}
+
+object UserServiceLive {
+  val layer: ULayer[UserService] = ZLayer.succeed(
+    new UserService {
+      def greet(name: String): UIO[Unit] =
+        Console.printLine(s"Hello, $name!")
+    }
+  )
+}
+
+object CustomApp extends ZIOApp {
+  type Environment = UserService
+  
+  def environmentTag = EnvironmentTag[UserService]
+  
+  def bootstrap = UserServiceLive.layer
+  
+  def run = 
+    for {
+      service <- ZIO.service[UserService]
+      args    <- getArgs
+      name    = args.headOption.getOrElse("World")
+      _       <- service.greet(name)
+    } yield ()
+}
+```

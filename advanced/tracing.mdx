@@ -1,0 +1,409 @@
+---
+title: "Tracing"
+description: "Understand execution flow and debug ZIO applications with built-in tracing capabilities"
+---
+
+# Tracing
+
+ZIO provides built-in execution tracing that captures the location where each effect is created. This enables rich stack traces, debugging capabilities, and understanding of asynchronous execution flows that would be impossible with traditional JVM stack traces.
+
+## Overview
+
+Every ZIO effect carries an implicit `Trace` parameter that records:
+
+- **Location** - The method or function where the effect was created
+- **File** - The source file name
+- **Line** - The line number in the source file
+
+This information is automatically captured at compile time and propagated through effect composition.
+
+<Note>
+ZIO's tracing is lightweight and designed for production use - it adds minimal overhead compared to the rich debugging information it provides.
+</Note>
+
+## Implicit Tracing
+
+Most ZIO effects require an implicit `Trace`:
+
+```scala
+import zio._
+
+def loadUser(id: String)(implicit trace: Trace): Task[User] = 
+  ZIO.attempt {
+    // trace captures this location
+    database.findUser(id)
+  }
+```
+
+In practice, the Scala compiler automatically provides the trace:
+
+```scala
+// Trace is implicitly captured
+val program = for {
+  user <- loadUser("123") // Location recorded
+  profile <- loadProfile(user.id) // Location recorded
+} yield profile
+```
+
+## Stack Traces
+
+ZIO uses traces to build meaningful stack traces for failures:
+
+```scala
+val program = for {
+  _ <- ZIO.attempt(riskyOperation1) // line 10
+  _ <- ZIO.attempt(riskyOperation2) // line 11
+  _ <- ZIO.attempt(failingOperation) // line 12
+} yield ()
+
+program.catchAll { error =>
+  error.printStackTrace() // Shows lines 10, 11, 12
+  ZIO.fail(error)
+}
+```
+
+### Fiber Stack Traces
+
+Access the execution trace of a running fiber:
+
+```scala
+for {
+  fiber <- longRunningTask.fork
+  trace <- fiber.trace
+  _     <- Console.printLine(s"Fiber trace: $trace")
+} yield ()
+```
+
+## Disabling Tracing
+
+For performance-critical sections, disable automatic tracing:
+
+```scala
+import zio.stacktracer.TracingImplicits.disableAutoTrace
+
+// Tracing disabled for this method
+def hotPath(data: Data): UIO[Result] = {
+  ZIO.succeed(compute(data))
+}
+```
+
+<Warning>
+Only disable tracing in proven performance bottlenecks. The overhead is typically negligible compared to the debugging value.
+</Warning>
+
+## Trace Operations
+
+### Creating Traces
+
+Manually construct a trace:
+
+```scala
+val customTrace = Trace(
+  location = "MyClass.myMethod",
+  file = "MyClass.scala",
+  line = 42
+)
+```
+
+### Empty Traces
+
+Use an empty trace when no location is available:
+
+```scala
+val noTrace = Trace.empty
+```
+
+### Comparing Traces
+
+Check if traces point to the same source location:
+
+```scala
+val same = Trace.equalIgnoreLocation(trace1, trace2)
+```
+
+### Converting to Java Stack Traces
+
+```scala
+val javaElement: Option[StackTraceElement] = 
+  Trace.toJava(trace)
+```
+
+## Debugging with Traces
+
+### Logging Execution Paths
+
+Use traces to understand execution flow:
+
+```scala
+def logTrace[R, E, A](
+  zio: ZIO[R, E, A]
+)(implicit trace: Trace): ZIO[R, E, A] = {
+  for {
+    _ <- Console.printLine(s"Executing at: $trace")
+    result <- zio
+  } yield result
+}
+
+val traced = logTrace {
+  for {
+    a <- operation1
+    b <- operation2
+    c <- operation3
+  } yield c
+}
+```
+
+### Capturing Execution Context
+
+```scala
+case class ExecutionContext(
+  trace: Trace,
+  timestamp: Instant,
+  fiberId: Fiber.Id
+)
+
+def withContext[R, E, A](
+  zio: ZIO[R, E, A]
+)(implicit trace: Trace): ZIO[R, E, (A, ExecutionContext)] = {
+  for {
+    id <- ZIO.fiberId
+    result <- zio
+    context = ExecutionContext(
+      trace,
+      Instant.now(),
+      id
+    )
+  } yield (result, context)
+}
+```
+
+## Async Boundaries
+
+Traces are preserved across asynchronous boundaries:
+
+```scala
+val async = for {
+  fiber <- heavyComputation.fork // line 10
+  _     <- ZIO.sleep(1.second)   // line 11
+  result <- fiber.join            // line 12
+} yield result
+
+// If heavyComputation fails, the stack trace
+// will include lines 10, 11, and 12
+```
+
+## Performance Tracing
+
+### Measuring with Traces
+
+```scala
+def timed[R, E, A](
+  zio: ZIO[R, E, A]
+)(implicit trace: Trace): ZIO[R, E, (A, Duration)] = {
+  for {
+    start  <- Clock.nanoTime
+    result <- zio
+    end    <- Clock.nanoTime
+    duration = Duration.fromNanos(end - start)
+    _      <- Console.printLine(
+                s"${trace} took ${duration}"
+              )
+  } yield (result, duration)
+}
+```
+
+## Practical Examples
+
+### Error Context Enhancement
+
+```scala
+case class EnhancedError(
+  message: String,
+  trace: Trace,
+  cause: Option[Throwable]
+) extends Exception(message)
+
+def enhanceError[R, E, A](
+  zio: ZIO[R, E, A]
+)(implicit trace: Trace): ZIO[R, EnhancedError, A] = {
+  zio.mapError { error =>
+    EnhancedError(
+      error.toString,
+      trace,
+      Some(error.asInstanceOf[Throwable])
+    )
+  }
+}
+
+val enhanced = riskyOperation.pipe(enhanceError)
+```
+
+### Distributed Tracing Integration
+
+```scala
+import zio.telemetry.opentelemetry._
+
+def traced[R, E, A](
+  operationName: String
+)(zio: ZIO[R, E, A])(implicit trace: Trace): ZIO[R, E, A] = {
+  for {
+    span <- Tracing.span(operationName) {
+              zio
+            }.span
+    _    <- span.setAttribute("source.location", trace.toString)
+    _    <- span.setAttribute("source.file", getFile(trace))
+    _    <- span.setAttribute("source.line", getLine(trace))
+  } yield ()
+}
+
+def getFile(trace: Trace): String = 
+  trace match {
+    case Trace(_, file, _) => file
+    case _ => "unknown"
+  }
+
+def getLine(trace: Trace): Int =
+  trace match {
+    case Trace(_, _, line) => line
+    case _ => -1
+  }
+```
+
+### Test Debugging Helper
+
+```scala
+import zio.test._
+
+def debugTest[R, E, A](
+  test: ZIO[R, E, A]
+)(implicit trace: Trace): ZIO[R, E, A] = {
+  test.tapError { error =>
+    Console.printLine(s"Test failed at $trace: $error")
+  }.tapDefect { cause =>
+    Console.printLine(s"Test defect at $trace: ${cause.prettyPrint}")
+  }
+}
+
+val myTest = test("user loading") {
+  debugTest {
+    for {
+      user <- loadUser("123")
+      _ <- assertTrue(user.isActive)
+    } yield ()
+  }
+}
+```
+
+### Audit Logging
+
+```scala
+case class AuditLog(
+  action: String,
+  user: String,
+  location: String,
+  timestamp: Instant
+)
+
+def audited[R, E, A](
+  action: String,
+  user: String
+)(zio: ZIO[R, E, A])(implicit trace: Trace): ZIO[R, E, A] = {
+  for {
+    timestamp <- Clock.instant
+    log = AuditLog(
+      action,
+      user,
+      trace.toString,
+      timestamp
+    )
+    _ <- saveAuditLog(log)
+    result <- zio
+  } yield result
+}
+
+val auditedOperation = audited("DELETE_USER", "admin") {
+  deleteUser(userId)
+}
+```
+
+## ZIO Telemetry Integration
+
+Integrate with OpenTelemetry for distributed tracing:
+
+```scala
+import zio.telemetry.opentelemetry.Tracing
+
+val traced = Tracing.root("operation") {
+  for {
+    a <- operation1 @@ Tracing.setAttribute("step", "1")
+    b <- operation2 @@ Tracing.setAttribute("step", "2") 
+    c <- operation3 @@ Tracing.setAttribute("step", "3")
+  } yield c
+}
+```
+
+## Best Practices
+
+<CardGroup cols={2}>
+  <Card title="Keep Implicit" icon="magic">
+    Let the compiler provide traces implicitly - don't pass them manually.
+  </Card>
+  
+  <Card title="Preserve Traces" icon="link">
+    When creating helper functions, ensure they accept implicit traces.
+  </Card>
+  
+  <Card title="Debug with Traces" icon="bug">
+    Use traces to enhance error messages and logging.
+  </Card>
+  
+  <Card title="Selective Disable" icon="gauge">
+    Only disable tracing in proven hot paths.
+  </Card>
+</CardGroup>
+
+## Common Patterns
+
+### Trace-Aware Error Handling
+
+```scala
+def handleError[R, E, A](
+  zio: ZIO[R, E, A]
+)(handler: (E, Trace) => ZIO[R, Nothing, A])
+(implicit trace: Trace): ZIO[R, Nothing, A] = {
+  zio.catchAll(e => handler(e, trace))
+}
+```
+
+### Conditional Tracing
+
+```scala
+def conditionalTrace[R, E, A](
+  enabled: Boolean
+)(zio: ZIO[R, E, A])(implicit trace: Trace): ZIO[R, E, A] = {
+  if (enabled) {
+    zio.tapBoth(
+      error => Console.printLine(s"Error at $trace: $error"),
+      result => Console.printLine(s"Success at $trace: $result")
+    )
+  } else {
+    zio
+  }
+}
+```
+
+## Performance Impact
+
+Tracing overhead:
+
+- **Compile time** - Minimal, just capturing source location
+- **Runtime allocation** - One small object per effect creation site
+- **Execution time** - Negligible (< 1% for typical applications)
+- **Memory** - Traces are shared across effect instances
+
+## See Also
+
+- [Debugging](/testing/debugging) - Debugging techniques for ZIO
+- [Observability](/observability/logging) - Logging and observability patterns
+- [ZIO Telemetry](https://github.com/zio/zio-telemetry) - OpenTelemetry integration
+- API Reference: `Trace.scala:22`

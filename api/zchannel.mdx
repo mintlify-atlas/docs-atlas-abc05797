@@ -1,0 +1,517 @@
+---
+title: ZChannel
+---
+
+A `ZChannel[Env, InErr, InElem, InDone, OutErr, OutElem, OutDone]` is a nexus of I/O operations that supports both reading and writing. Channels are the foundation of ZIO Streams: both streams and sinks are built on channels.
+
+Most users shouldn't need to use channels directly, as streams and sinks are more convenient and cover all common use cases. However, when adding new stream and sink operators, or doing something highly specialized, channels provide the low-level primitives needed.
+
+## Type Signature
+
+```scala
+sealed trait ZChannel[-Env, -InErr, -InElem, -InDone, +OutErr, +OutElem, +OutDone]
+```
+
+The type parameters represent:
+- `Env` - Environment required by the channel
+- `InErr` - Type of upstream errors the channel can read
+- `InElem` - Type of elements the channel can read
+- `InDone` - Type of upstream done signal
+- `OutErr` - Type of errors the channel may produce
+- `OutElem` - Type of elements the channel may produce
+- `OutDone` - Type of the terminal value when the channel completes
+
+## Core Concepts
+
+A channel:
+- May **read** values of type `InElem` or process upstream failures of type `InErr`
+- May **write** values of type `OutElem`
+- **Yields** a value of type `OutDone` when finished
+- May **fail** with a value of type `OutErr`
+
+## Core Constructors
+
+### Basic Construction
+
+#### `succeed`
+```scala
+def succeed[OutDone](
+  result: => OutDone
+)(implicit trace: Trace): ZChannel[Any, Any, Any, Any, Nothing, Nothing, OutDone]
+```
+Creates a channel that succeeds with the specified value.
+
+#### `succeedNow`
+```scala
+def succeedNow[OutDone](
+  result: OutDone
+)(implicit trace: Trace): ZChannel[Any, Any, Any, Any, Nothing, Nothing, OutDone]
+```
+Creates a channel that succeeds immediately with the specified value.
+
+#### `fail`
+```scala
+def fail[OutErr](
+  error: => OutErr
+)(implicit trace: Trace): ZChannel[Any, Any, Any, Any, OutErr, Nothing, Nothing]
+```
+Creates a channel that fails with the specified error.
+
+#### `failCause`
+```scala
+def failCause[OutErr](
+  cause: => Cause[OutErr]
+)(implicit trace: Trace): ZChannel[Any, Any, Any, Any, OutErr, Nothing, Nothing]
+```
+Creates a channel that fails with the specified cause.
+
+#### `unit`
+```scala
+def unit(implicit trace: Trace): ZChannel[Any, Any, Any, Any, Nothing, Nothing, Unit]
+```
+Creates a channel that succeeds with unit.
+
+### Effect Integration
+
+#### `fromZIO`
+```scala
+def fromZIO[Env, OutErr, OutDone](
+  zio: => ZIO[Env, OutErr, OutDone]
+)(implicit trace: Trace): ZChannel[Env, Any, Any, Any, OutErr, Nothing, OutDone]
+```
+Creates a channel from a ZIO effect.
+
+#### `suspend`
+```scala
+def suspend[Env, InErr, InElem, InDone, OutErr, OutElem, OutDone](
+  channel: => ZChannel[Env, InErr, InElem, InDone, OutErr, OutElem, OutDone]
+)(implicit trace: Trace): ZChannel[Env, InErr, InElem, InDone, OutErr, OutElem, OutDone]
+```
+Lazily constructs a channel.
+
+### Reading & Writing
+
+#### `read`
+```scala
+def read[InElem](implicit 
+  trace: Trace
+): ZChannel[Any, Any, InElem, Any, None.type, Nothing, InElem]
+```
+Reads a single element from the input.
+
+#### `readWith`
+```scala
+def readWith[Env, InErr, InElem, InDone, OutErr, OutElem, OutDone](
+  in: InElem => ZChannel[Env, InErr, InElem, InDone, OutErr, OutElem, OutDone],
+  error: InErr => ZChannel[Env, InErr, InElem, InDone, OutErr, OutElem, OutDone],
+  done: InDone => ZChannel[Env, InErr, InElem, InDone, OutErr, OutElem, OutDone]
+)(implicit trace: Trace): ZChannel[Env, InErr, InElem, InDone, OutErr, OutElem, OutDone]
+```
+Reads from the input and handles element, error, and done cases.
+
+#### `readWithCause`
+```scala
+def readWithCause[Env, InErr, InElem, InDone, OutErr, OutElem, OutDone](
+  in: InElem => ZChannel[Env, InErr, InElem, InDone, OutErr, OutElem, OutDone],
+  halt: Cause[InErr] => ZChannel[Env, InErr, InElem, InDone, OutErr, OutElem, OutDone],
+  done: InDone => ZChannel[Env, InErr, InElem, InDone, OutErr, OutElem, OutDone]
+)(implicit trace: Trace): ZChannel[Env, InErr, InElem, InDone, OutErr, OutElem, OutDone]
+```
+Like `readWith` but handles the error case as a full `Cause`.
+
+#### `write`
+```scala
+def write[OutElem](
+  out: => OutElem
+)(implicit trace: Trace): ZChannel[Any, Any, Any, Any, Nothing, OutElem, Unit]
+```
+Writes a single element to the output.
+
+#### `writeAll`
+```scala
+def writeAll[OutElem](
+  outs: OutElem*
+)(implicit trace: Trace): ZChannel[Any, Any, Any, Any, Nothing, OutElem, Unit]
+```
+Writes multiple elements to the output.
+
+#### `writeChunk`
+```scala
+def writeChunk[OutElem](
+  outs: => Chunk[OutElem]
+)(implicit trace: Trace): ZChannel[Any, Any, Any, Any, Nothing, OutElem, Unit]
+```
+Writes a chunk of elements to the output.
+
+### Identity & Passthrough
+
+#### `identity`
+```scala
+def identity[Err, Elem, Done](implicit 
+  trace: Trace
+): ZChannel[Any, Err, Elem, Done, Err, Elem, Done]
+```
+Creates an identity channel that passes through all inputs to outputs.
+
+#### `readOrFail`
+```scala
+def readOrFail[E, In](
+  e: => E
+)(implicit trace: Trace): ZChannel[Any, Any, In, Any, E, Nothing, In]
+```
+Reads from input or fails with the specified error if input is empty.
+
+### Resource Management
+
+#### `acquireReleaseWith`
+```scala
+def acquireReleaseWith[Env, InErr, InElem, InDone, OutErr, Acquired, OutElem2, OutDone](
+  acquire: => ZIO[Env, OutErr, Acquired]
+)(release: Acquired => URIO[Env, Any])(
+  use: Acquired => ZChannel[Env, InErr, InElem, InDone, OutErr, OutElem2, OutDone]
+)(implicit trace: Trace): ZChannel[Env, InErr, InElem, InDone, OutErr, OutElem2, OutDone]
+```
+Creates a channel that acquires a resource, uses it, and releases it.
+
+#### `acquireReleaseExitWith`
+```scala
+def acquireReleaseExitWith[Env, InErr, InElem, InDone, OutErr, Acquired, OutElem2, OutDone](
+  acquire: => ZIO[Env, OutErr, Acquired]
+)(release: (Acquired, Exit[OutErr, OutDone]) => URIO[Env, Any])(
+  use: Acquired => ZChannel[Env, InErr, InElem, InDone, OutErr, OutElem2, OutDone]
+)(implicit trace: Trace): ZChannel[Env, InErr, InElem, InDone, OutErr, OutElem2, OutDone]
+```
+Like `acquireReleaseWith` but the release action has access to the channel's exit value.
+
+#### `acquireReleaseOutWith`
+```scala
+def acquireReleaseOutWith[Env, OutErr, Acquired](
+  acquire: => ZIO[Env, OutErr, Acquired]
+)(release: Acquired => URIO[Env, Any])(implicit 
+  trace: Trace
+): ZChannel[Env, Any, Any, Any, OutErr, Acquired, Unit]
+```
+Creates a channel that acquires a resource and writes it as output, with automatic cleanup.
+
+### Looping & Repetition
+
+#### `repeated`
+```scala
+def repeated[Env, InErr, InElem, InDone, OutErr, OutElem, OutDone](
+  channel: => ZChannel[Env, InErr, InElem, InDone, OutErr, OutElem, OutDone]
+)(implicit trace: Trace): ZChannel[Env, InErr, InElem, InDone, OutErr, OutElem, Nothing]
+```
+Repeats the channel indefinitely.
+
+### Environment Access
+
+#### `environment`
+```scala
+def environment[Env](implicit 
+  trace: Trace
+): ZChannel[Env, Any, Any, Any, Nothing, Nothing, ZEnvironment[Env]]
+```
+Accesses the environment of the channel.
+
+#### `environmentWith`
+```scala
+def environmentWith[Env, OutDone](
+  f: ZEnvironment[Env] => OutDone
+)(implicit trace: Trace): ZChannel[Env, Any, Any, Any, Nothing, Nothing, OutDone]
+```
+Accesses the environment and transforms it.
+
+#### `environmentWithChannel`
+```scala
+def environmentWithChannel[Env, InErr, InElem, InDone, OutErr, OutElem, OutDone](
+  f: ZEnvironment[Env] => ZChannel[Env, InErr, InElem, InDone, OutErr, OutElem, OutDone]
+)(implicit trace: Trace): ZChannel[Env, InErr, InElem, InDone, OutErr, OutElem, OutDone]
+```
+Accesses the environment to construct a channel.
+
+## Key Combinators
+
+### Sequencing
+
+#### `flatMap`
+```scala
+def flatMap[
+  Env1 <: Env,
+  InErr1 <: InErr,
+  InElem1 <: InElem,
+  InDone1 <: InDone,
+  OutErr1 >: OutErr,
+  OutElem1 >: OutElem,
+  OutDone2
+](
+  f: OutDone => ZChannel[Env1, InErr1, InElem1, InDone1, OutErr1, OutElem1, OutDone2]
+)(implicit trace: Trace): ZChannel[Env1, InErr1, InElem1, InDone1, OutErr1, OutElem1, OutDone2]
+```
+Sequences this channel with another channel created from its result.
+
+#### `*>` (zipRight)
+```scala
+def *>[
+  Env1 <: Env,
+  InErr1 <: InErr,
+  InElem1 <: InElem,
+  InDone1 <: InDone,
+  OutErr1 >: OutErr,
+  OutElem1 >: OutElem,
+  OutDone2
+](
+  that: => ZChannel[Env1, InErr1, InElem1, InDone1, OutErr1, OutElem1, OutDone2]
+)(implicit trace: Trace): ZChannel[Env1, InErr1, InElem1, InDone1, OutErr1, OutElem1, OutDone2]
+```
+Sequences this channel with another, keeping only the result of the second.
+
+#### `<*` (zipLeft)
+```scala
+def <*[
+  Env1 <: Env,
+  InErr1 <: InErr,
+  InElem1 <: InElem,
+  InDone1 <: InDone,
+  OutErr1 >: OutErr,
+  OutElem1 >: OutElem,
+  OutDone2
+](
+  that: => ZChannel[Env1, InErr1, InElem1, InDone1, OutErr1, OutElem1, OutDone2]
+)(implicit trace: Trace): ZChannel[Env1, InErr1, InElem1, InDone1, OutErr1, OutElem1, OutDone]
+```
+Sequences this channel with another, keeping only the result of the first.
+
+### Piping
+
+#### `>>>` (pipeTo)
+```scala
+def >>>[Env1 <: Env, OutErr2, OutElem2, OutDone2](
+  that: => ZChannel[Env1, OutErr, OutElem, OutDone, OutErr2, OutElem2, OutDone2]
+)(implicit trace: Trace): ZChannel[Env1, InErr, InElem, InDone, OutErr2, OutElem2, OutDone2]
+```
+Pipes the output of this channel into another channel. The returned channel has the input type of this channel and the output type of the specified channel.
+
+#### `pipeToOrFail`
+```scala
+def pipeToOrFail[Env1 <: Env, OutErr2, OutElem2, OutDone2](
+  that: => ZChannel[Env1, OutErr, OutElem, OutDone, OutErr2, OutElem2, OutDone2]
+)(implicit trace: Trace): ZChannel[Env1, InErr, InElem, InDone, OutErr2, OutElem2, OutDone2]
+```
+Like `pipeTo` but propagates failures correctly.
+
+### Transformation
+
+#### `map`
+```scala
+def map[OutDone2](
+  f: OutDone => OutDone2
+)(implicit trace: Trace): ZChannel[Env, InErr, InElem, InDone, OutErr, OutElem, OutDone2]
+```
+Transforms the terminal value of the channel.
+
+#### `mapOut`
+```scala
+def mapOut[OutElem2](
+  f: OutElem => OutElem2
+)(implicit trace: Trace): ZChannel[Env, InErr, InElem, InDone, OutErr, OutElem2, OutDone]
+```
+Transforms output elements.
+
+#### `mapZIO`
+```scala
+def mapZIO[Env1 <: Env, OutErr1 >: OutErr, OutDone2](
+  f: OutDone => ZIO[Env1, OutErr1, OutDone2]
+)(implicit trace: Trace): ZChannel[Env1, InErr, InElem, InDone, OutErr1, OutElem, OutDone2]
+```
+Effectfully transforms the terminal value.
+
+#### `mapOutZIO`
+```scala
+def mapOutZIO[Env1 <: Env, OutErr1 >: OutErr, OutElem2](
+  f: OutElem => ZIO[Env1, OutErr1, OutElem2]
+)(implicit trace: Trace): ZChannel[Env1, InErr, InElem, InDone, OutErr1, OutElem2, OutDone]
+```
+Effectfully transforms output elements.
+
+#### `as`
+```scala
+def as[OutDone2](
+  z2: => OutDone2
+)(implicit trace: Trace): ZChannel[Env, InErr, InElem, InDone, OutErr, OutElem, OutDone2]
+```
+Replaces the terminal value with the specified constant.
+
+### Concatenation
+
+#### `concatMap`
+```scala
+def concatMap[Env1 <: Env, InErr1 <: InErr, InElem1 <: InElem, InDone1 <: InDone, OutErr1 >: OutErr, OutElem2](
+  f: OutElem => ZChannel[Env1, InErr1, InElem1, InDone1, OutErr1, OutElem2, Any]
+)(implicit trace: Trace): ZChannel[Env1, InErr1, InElem1, InDone1, OutErr1, OutElem2, Any]
+```
+Maps each output element to a channel and concatenates all the channels.
+
+#### `concatMapWith`
+```scala
+def concatMapWith[
+  Env1 <: Env,
+  InErr1 <: InErr,
+  InElem1 <: InElem,
+  InDone1 <: InDone,
+  OutErr1 >: OutErr,
+  OutElem2,
+  OutDone2,
+  OutDone3
+](
+  f: OutElem => ZChannel[Env1, InErr1, InElem1, InDone1, OutErr1, OutElem2, OutDone2]
+)(
+  g: (OutDone2, OutDone2) => OutDone2,
+  h: (OutDone2, OutDone) => OutDone3
+)(implicit trace: Trace): ZChannel[Env1, InErr1, InElem1, InDone1, OutErr1, OutElem2, OutDone3]
+```
+Like `concatMap` but with custom functions for merging terminal values.
+
+### Error Handling
+
+#### `catchAll`
+```scala
+def catchAll[
+  Env1 <: Env,
+  InErr1 <: InErr,
+  InElem1 <: InElem,
+  InDone1 <: InDone,
+  OutErr2,
+  OutElem1 >: OutElem,
+  OutDone1 >: OutDone
+](
+  f: OutErr => ZChannel[Env1, InErr1, InElem1, InDone1, OutErr2, OutElem1, OutDone1]
+)(implicit trace: Trace): ZChannel[Env1, InErr1, InElem1, InDone1, OutErr2, OutElem1, OutDone1]
+```
+Recovers from all errors by switching to another channel.
+
+#### `catchAllCause`
+```scala
+def catchAllCause[
+  Env1 <: Env,
+  InErr1 <: InErr,
+  InElem1 <: InElem,
+  InDone1 <: InDone,
+  OutErr2,
+  OutElem1 >: OutElem,
+  OutDone1 >: OutDone
+](
+  f: Cause[OutErr] => ZChannel[Env1, InErr1, InElem1, InDone1, OutErr2, OutElem1, OutDone1]
+)(implicit trace: Trace): ZChannel[Env1, InErr1, InElem1, InDone1, OutErr2, OutElem1, OutDone1]
+```
+Recovers from all errors (including defects) by switching to another channel.
+
+#### `orElse`
+```scala
+def orElse[
+  Env1 <: Env,
+  InErr1 <: InErr,
+  InElem1 <: InElem,
+  InDone1 <: InDone,
+  OutErr2,
+  OutElem1 >: OutElem,
+  OutDone1 >: OutDone
+](
+  that: => ZChannel[Env1, InErr1, InElem1, InDone1, OutErr2, OutElem1, OutDone1]
+)(implicit trace: Trace): ZChannel[Env1, InErr1, InElem1, InDone1, OutErr2, OutElem1, OutDone1]
+```
+Tries this channel first, and if it fails, switches to the alternative.
+
+### Finalization
+
+#### `ensuring`
+```scala
+def ensuring[Env1 <: Env](
+  finalizer: => ZIO[Env1, Nothing, Any]
+)(implicit trace: Trace): ZChannel[Env1, InErr, InElem, InDone, OutErr, OutElem, OutDone]
+```
+Ensures the specified finalizer is executed when the channel completes.
+
+#### `ensuringWith`
+```scala
+def ensuringWith[Env1 <: Env](
+  finalizer: Exit[OutErr, OutDone] => ZIO[Env1, Nothing, Any]
+)(implicit trace: Trace): ZChannel[Env1, InErr, InElem, InDone, OutErr, OutElem, OutDone]
+```
+Ensures the specified finalizer is executed with access to the channel's exit value.
+
+### Merging
+
+#### `mergeWith`
+```scala
+def mergeWith[
+  Env1 <: Env,
+  InErr1 <: InErr,
+  InElem1 <: InElem,
+  InDone1 <: InDone,
+  OutErr2,
+  OutErr3,
+  OutElem1 >: OutElem,
+  OutDone2,
+  OutDone3
+](
+  that: => ZChannel[Env1, InErr1, InElem1, InDone1, OutErr2, OutElem1, OutDone2]
+)(
+  leftDone: Exit[OutErr, OutDone] => ZChannel.MergeDecision[Env1, OutErr2, OutDone2, OutErr3, OutDone3],
+  rightDone: Exit[OutErr2, OutDone2] => ZChannel.MergeDecision[Env1, OutErr, OutDone, OutErr3, OutDone3]
+)(implicit trace: Trace): ZChannel[Env1, InErr1, InElem1, InDone1, OutErr3, OutElem1, OutDone3]
+```
+Merges this channel with another channel concurrently, using custom merge strategies.
+
+### Collection
+
+#### `collectElements`
+```scala
+def collectElements(implicit 
+  trace: Trace
+): ZChannel[Env, InErr, InElem, InDone, OutErr, Nothing, (Chunk[Chunk[OutElem]], OutDone)]
+```
+Collects all output elements into a chunk of chunks along with the terminal value.
+
+#### `drain`
+```scala
+def drain(implicit trace: Trace): ZChannel[Env, InErr, InElem, InDone, OutErr, Nothing, OutDone]
+```
+Runs the channel for its effects but discards all output elements.
+
+### Environment Modification
+
+#### `provide`
+```scala
+def provide(
+  env: => ZEnvironment[Env]
+)(implicit trace: Trace): ZChannel[Any, InErr, InElem, InDone, OutErr, OutElem, OutDone]
+```
+Provides the channel with its required environment.
+
+#### `provideLayer`
+```scala
+def provideLayer[OutErr1 >: OutErr, Env0](
+  layer: => ZLayer[Env0, OutErr1, Env]
+)(implicit trace: Trace): ZChannel[Env0, InErr, InElem, InDone, OutErr1, OutElem, OutDone]
+```
+Provides a layer to the channel.
+
+## Conversion
+
+#### `toSink`
+```scala
+def toSink[Env1 <: Env, InErr1 <: InErr, InElem1 <: InElem, InDone1 <: InDone, OutErr1 >: OutErr, OutElem1 >: OutElem](
+  implicit trace: Trace
+): ZSink[Env1, OutErr1, InElem1, OutElem1, OutDone]
+```
+Converts this channel to a sink.
+
+## Notes
+
+Channels provide the low-level building blocks for streams and sinks. They offer fine-grained control over:
+- Reading and writing operations
+- Error propagation
+- Resource management
+- Concurrent composition
+
+For most use cases, prefer using `ZStream`, `ZSink`, and `ZPipeline` which provide a higher-level API built on channels.

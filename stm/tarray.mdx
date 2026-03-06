@@ -1,0 +1,720 @@
+---
+title: TArray
+description: Transactional arrays with atomic operations in ZIO STM
+---
+
+## Overview
+
+`TArray[A]` is a transactional array that wraps an array of `TRef[A]` elements. It provides array operations that can be performed atomically within STM transactions.
+
+```scala
+final class TArray[A]
+```
+
+## Creating TArray
+
+### make
+
+Creates a `TArray` initialized with specified values:
+
+```scala
+import zio.stm._
+
+val createArray: USTM[TArray[Int]] = 
+  TArray.make(1, 2, 3, 4, 5)
+```
+
+### fromIterable
+
+Creates a `TArray` from an iterable:
+
+```scala
+import zio.stm._
+
+val fromList: USTM[TArray[String]] = 
+  TArray.fromIterable(List("a", "b", "c"))
+```
+
+### empty
+
+Creates an empty `TArray`:
+
+```scala
+import zio.stm._
+
+val emptyArray: USTM[TArray[Int]] = 
+  TArray.empty[Int]
+```
+
+## Accessing Elements
+
+### apply (element access)
+
+Accesses an element by index:
+
+```scala
+import zio._
+import zio.stm._
+
+val getElement: UIO[Int] = for {
+  array <- TArray.make(10, 20, 30).commit
+  value <- array(1).commit  // Get element at index 1
+} yield value
+// Result: 20
+```
+
+<Warning>
+Accessing an out-of-bounds index will die with `ArrayIndexOutOfBoundsException`.
+</Warning>
+
+### firstOption
+
+Gets the first element if it exists:
+
+```scala
+val getFirst: UIO[Option[Int]] = for {
+  array <- TArray.make(1, 2, 3).commit
+  first <- array.firstOption.commit
+} yield first
+// Result: Some(1)
+```
+
+### lastOption
+
+Gets the last element if it exists:
+
+```scala
+val getLast: UIO[Option[Int]] = for {
+  array <- TArray.make(1, 2, 3).commit
+  last <- array.lastOption.commit
+} yield last
+// Result: Some(3)
+```
+
+## Updating Elements
+
+### update
+
+Updates an element at a specific index:
+
+```scala
+import zio._
+import zio.stm._
+
+val updateElement: UIO[Unit] = for {
+  array <- TArray.make(1, 2, 3).commit
+  _ <- array.update(1, _ * 10).commit
+  value <- array(1).commit
+} yield value
+// Result: value = 20
+```
+
+### updateSTM
+
+Updates an element using a transactional effect:
+
+```scala
+import zio._
+import zio.stm._
+
+val updateWithSTM: IO[String, Unit] = for {
+  array <- TArray.make(1, 2, 3).commit
+  _ <- array.updateSTM(1, n => 
+    if (n > 0) STM.succeed(n * 10)
+    else STM.fail("Must be positive")
+  ).commit
+} yield ()
+```
+
+## Bulk Operations
+
+### transform
+
+Atomically updates all elements using a pure function:
+
+```scala
+import zio._
+import zio.stm._
+
+val doubleAll: UIO[Unit] = for {
+  array <- TArray.make(1, 2, 3, 4).commit
+  _ <- array.transform(_ * 2).commit
+  list <- array.toList.commit
+} yield list
+// Result: List(2, 4, 6, 8)
+```
+
+### transformSTM
+
+Atomically updates all elements using a transactional effect:
+
+```scala
+import zio._
+import zio.stm._
+
+val transformWithValidation: IO[String, Unit] = for {
+  array <- TArray.make(1, 2, 3).commit
+  _ <- array.transformSTM { n =>
+    if (n > 0) STM.succeed(n * 2)
+    else STM.fail("Must be positive")
+  }.commit
+} yield ()
+```
+
+## Searching
+
+### find
+
+Finds the first element matching a predicate:
+
+```scala
+import zio._
+import zio.stm._
+
+val findEven: UIO[Option[Int]] = for {
+  array <- TArray.make(1, 3, 4, 5).commit
+  result <- array.find(_ % 2 == 0).commit
+} yield result
+// Result: Some(4)
+```
+
+### findLast
+
+Finds the last element matching a predicate:
+
+```scala
+val findLastOdd: UIO[Option[Int]] = for {
+  array <- TArray.make(1, 2, 3, 4, 5).commit
+  result <- array.findLast(_ % 2 != 0).commit
+} yield result
+// Result: Some(5)
+```
+
+### findSTM
+
+Finds the first element matching a transactional predicate:
+
+```scala
+import zio._
+import zio.stm._
+
+val findWithSTM: IO[String, Option[Int]] = for {
+  array <- TArray.make(1, 2, 3).commit
+  result <- array.findSTM { n =>
+    if (n > 1) STM.succeed(true)
+    else STM.succeed(false)
+  }.commit
+} yield result
+// Result: Some(2)
+```
+
+### findLastSTM
+
+```scala
+val findLastWithSTM: IO[String, Option[Int]] = for {
+  array <- TArray.make(1, 2, 3).commit
+  result <- array.findLastSTM { n =>
+    STM.succeed(n > 1)
+  }.commit
+} yield result
+// Result: Some(3)
+```
+
+## Index Operations
+
+### indexOf
+
+Finds the index of a value:
+
+```scala
+import zio._
+import zio.stm._
+
+val findIndex: UIO[Int] = for {
+  array <- TArray.make(10, 20, 30, 20).commit
+  index <- array.indexOf(20).commit
+} yield index
+// Result: 1 (first occurrence)
+```
+
+### lastIndexOf
+
+Finds the last index of a value:
+
+```scala
+val findLastIndex: UIO[Int] = for {
+  array <- TArray.make(10, 20, 30, 20).commit
+  index <- array.lastIndexOf(20).commit
+} yield index
+// Result: 3 (last occurrence)
+```
+
+### indexWhere
+
+Finds the index where predicate is true:
+
+```scala
+val findIndexWhere: UIO[Int] = for {
+  array <- TArray.make(1, 2, 3, 4).commit
+  index <- array.indexWhere(_ > 2).commit
+} yield index
+// Result: 2 (index of 3)
+```
+
+### indexWhereSTM
+
+```scala
+import zio._
+import zio.stm._
+
+val findIndexSTM: IO[String, Int] = for {
+  array <- TArray.make(1, 2, 3).commit
+  index <- array.indexWhereSTM(n => STM.succeed(n > 1)).commit
+} yield index
+// Result: 1
+```
+
+## Testing Elements
+
+### contains
+
+Checks if the array contains a value:
+
+```scala
+import zio._
+import zio.stm._
+
+val hasValue: UIO[Boolean] = for {
+  array <- TArray.make(1, 2, 3).commit
+  result <- array.contains(2).commit
+} yield result
+// Result: true
+```
+
+### exists
+
+Checks if any element satisfies a predicate:
+
+```scala
+val hasEven: UIO[Boolean] = for {
+  array <- TArray.make(1, 3, 5, 6).commit
+  result <- array.exists(_ % 2 == 0).commit
+} yield result
+// Result: true
+```
+
+### existsSTM
+
+```scala
+import zio._
+import zio.stm._
+
+val existsWithSTM: IO[String, Boolean] = for {
+  array <- TArray.make(1, 2, 3).commit
+  result <- array.existsSTM(n => STM.succeed(n > 2)).commit
+} yield result
+// Result: true
+```
+
+### forall
+
+Checks if all elements satisfy a predicate:
+
+```scala
+val allPositive: UIO[Boolean] = for {
+  array <- TArray.make(1, 2, 3).commit
+  result <- array.forall(_ > 0).commit
+} yield result
+// Result: true
+```
+
+### forallSTM
+
+```scala
+import zio._
+import zio.stm._
+
+val forallWithSTM: IO[String, Boolean] = for {
+  array <- TArray.make(2, 4, 6).commit
+  result <- array.forallSTM(n => STM.succeed(n % 2 == 0)).commit
+} yield result
+// Result: true
+```
+
+## Collection Operations
+
+### collectFirst
+
+Finds the first result from a partial function:
+
+```scala
+import zio._
+import zio.stm._
+
+val collectSquare: UIO[Option[Int]] = for {
+  array <- TArray.make(1, 2, 3, 4).commit
+  result <- array.collectFirst {
+    case n if n % 2 == 0 => n * n
+  }.commit
+} yield result
+// Result: Some(4)
+```
+
+### collectFirstSTM
+
+```scala
+import zio._
+import zio.stm._
+
+val collectWithSTM: IO[String, Option[Int]] = for {
+  array <- TArray.make(1, 2, 3).commit
+  result <- array.collectFirstSTM {
+    case n if n > 1 => STM.succeed(n * 10)
+  }.commit
+} yield result
+// Result: Some(20)
+```
+
+### count
+
+Counts elements matching a predicate:
+
+```scala
+val countEven: UIO[Int] = for {
+  array <- TArray.make(1, 2, 3, 4, 5, 6).commit
+  count <- array.count(_ % 2 == 0).commit
+} yield count
+// Result: 3
+```
+
+### countSTM
+
+```scala
+import zio._
+import zio.stm._
+
+val countWithSTM: IO[String, Int] = for {
+  array <- TArray.make(1, 2, 3, 4).commit
+  count <- array.countSTM(n => STM.succeed(n > 2)).commit
+} yield count
+// Result: 2
+```
+
+## Folding
+
+### fold
+
+Folds over the array using a pure function:
+
+```scala
+import zio._
+import zio.stm._
+
+val sum: UIO[Int] = for {
+  array <- TArray.make(1, 2, 3, 4).commit
+  result <- array.fold(0)(_ + _).commit
+} yield result
+// Result: 10
+```
+
+### foldSTM
+
+Folds using a transactional function:
+
+```scala
+import zio._
+import zio.stm._
+
+val foldWithValidation: IO[String, Int] = for {
+  array <- TArray.make(1, 2, 3).commit
+  result <- array.foldSTM(0) { (acc, n) =>
+    if (n > 0) STM.succeed(acc + n)
+    else STM.fail("Negative number")
+  }.commit
+} yield result
+// Result: 6
+```
+
+### foreach
+
+Performs an effect for each element:
+
+```scala
+import zio._
+import zio.stm._
+
+val processAll: IO[String, Unit] = for {
+  ref <- TRef.makeCommit(0)
+  array <- TArray.make(1, 2, 3).commit
+  _ <- array.foreach { n =>
+    ref.update(_ + n)
+  }.commit
+  total <- ref.get.commit
+} yield total
+// Result: total = 6
+```
+
+## Aggregation
+
+### maxOption
+
+Finds the maximum element:
+
+```scala
+import zio._
+import zio.stm._
+
+val findMax: UIO[Option[Int]] = for {
+  array <- TArray.make(3, 1, 4, 1, 5).commit
+  max <- array.maxOption.commit
+} yield max
+// Result: Some(5)
+```
+
+### minOption
+
+Finds the minimum element:
+
+```scala
+val findMin: UIO[Option[Int]] = for {
+  array <- TArray.make(3, 1, 4, 1, 5).commit
+  min <- array.minOption.commit
+} yield min
+// Result: Some(1)
+```
+
+### reduceOption
+
+Reduces the array using a binary operator:
+
+```scala
+val product: UIO[Option[Int]] = for {
+  array <- TArray.make(1, 2, 3, 4).commit
+  result <- array.reduceOption(_ * _).commit
+} yield result
+// Result: Some(24)
+```
+
+### reduceOptionSTM
+
+```scala
+import zio._
+import zio.stm._
+
+val reduceWithSTM: IO[String, Option[Int]] = for {
+  array <- TArray.make(1, 2, 3).commit
+  result <- array.reduceOptionSTM { (a, b) =>
+    STM.succeed(a + b)
+  }.commit
+} yield result
+// Result: Some(6)
+```
+
+## Conversion
+
+### toList
+
+Converts the array to a list:
+
+```scala
+import zio._
+import zio.stm._
+
+val asList: UIO[List[Int]] = for {
+  array <- TArray.make(1, 2, 3).commit
+  list <- array.toList.commit
+} yield list
+// Result: List(1, 2, 3)
+```
+
+### toChunk
+
+Converts the array to a chunk:
+
+```scala
+import zio._
+import zio.stm._
+
+val asChunk: UIO[Chunk[Int]] = for {
+  array <- TArray.make(1, 2, 3).commit
+  chunk <- array.toChunk.commit
+} yield chunk
+```
+
+### size
+
+Gets the size of the array:
+
+```scala
+val arraySize: UIO[Int] = for {
+  array <- TArray.make(1, 2, 3, 4, 5).commit
+} yield array.size
+// Result: 5
+```
+
+<Info>
+`size` is not an STM operation - it returns the size directly without needing to commit.
+</Info>
+
+## Practical Examples
+
+### Parallel Counter Array
+
+```scala
+import zio._
+import zio.stm._
+
+class CounterArray(private val array: TArray[Int]) {
+  
+  def increment(index: Int): UIO[Unit] = 
+    array.update(index, _ + 1).commit
+  
+  def get(index: Int): UIO[Int] = 
+    array(index).commit
+  
+  def sum: UIO[Int] = 
+    array.fold(0)(_ + _).commit
+  
+  def reset: UIO[Unit] = 
+    array.transform(_ => 0).commit
+}
+
+object CounterArray {
+  def make(size: Int): UIO[CounterArray] = 
+    TArray.fromIterable(List.fill(size)(0))
+      .commit
+      .map(new CounterArray(_))
+}
+
+// Usage
+val program: UIO[Int] = for {
+  counters <- CounterArray.make(5)
+  _ <- counters.increment(0)
+  _ <- counters.increment(2)
+  _ <- counters.increment(2)
+  total <- counters.sum
+} yield total
+// Result: 3
+```
+
+### Histogram
+
+```scala
+import zio._
+import zio.stm._
+
+class Histogram(private val buckets: TArray[Int]) {
+  
+  def record(value: Int): UIO[Unit] = 
+    if (value >= 0 && value < buckets.size)
+      buckets.update(value, _ + 1).commit
+    else
+      ZIO.unit
+  
+  def getCounts: UIO[List[Int]] = 
+    buckets.toList.commit
+  
+  def total: UIO[Int] = 
+    buckets.fold(0)(_ + _).commit
+}
+
+object Histogram {
+  def make(numBuckets: Int): UIO[Histogram] = 
+    TArray.fromIterable(List.fill(numBuckets)(0))
+      .commit
+      .map(new Histogram(_))
+}
+```
+
+### Ring Buffer
+
+```scala
+import zio._
+import zio.stm._
+
+class RingBuffer[A](
+  private val array: TArray[Option[A]],
+  private val head: TRef[Int],
+  private val size: TRef[Int]
+) {
+  val capacity: Int = array.size
+  
+  def offer(value: A): UIO[Unit] = 
+    STM.atomically {
+      for {
+        currentHead <- head.get
+        _ <- array.update(currentHead, _ => Some(value))
+        _ <- head.update(h => (h + 1) % capacity)
+        currentSize <- size.get
+        _ <- if (currentSize < capacity)
+               size.update(_ + 1)
+             else STM.unit
+      } yield ()
+    }
+  
+  def toList: UIO[List[A]] = 
+    STM.atomically {
+      for {
+        currentSize <- size.get
+        currentHead <- head.get
+        list <- array.toList
+      } yield {
+        val start = (currentHead - currentSize + capacity) % capacity
+        (0 until currentSize).map { i =>
+          list((start + i) % capacity).get
+        }.toList
+      }
+    }
+}
+
+object RingBuffer {
+  def make[A](capacity: Int): UIO[RingBuffer[A]] = 
+    for {
+      array <- TArray.fromIterable(
+        List.fill(capacity)(Option.empty[A])
+      ).commit
+      head <- TRef.makeCommit(0)
+      size <- TRef.makeCommit(0)
+    } yield new RingBuffer(array, head, size)
+}
+```
+
+## Performance Tips
+
+<Tip>
+**Batch Updates**
+
+Use `transform` or `transformSTM` instead of multiple individual updates for better performance.
+</Tip>
+
+### Good
+
+```scala
+val good: UIO[Unit] = for {
+  array <- TArray.make(1, 2, 3, 4).commit
+  _ <- array.transform(_ * 2).commit  // Single transaction
+} yield ()
+```
+
+### Less Efficient
+
+```scala
+val lessEfficient: UIO[Unit] = for {
+  array <- TArray.make(1, 2, 3, 4).commit
+  _ <- STM.atomically {  // Multiple operations in transaction
+    for {
+      _ <- array.update(0, _ * 2)
+      _ <- array.update(1, _ * 2)
+      _ <- array.update(2, _ * 2)
+      _ <- array.update(3, _ * 2)
+    } yield ()
+  }
+} yield ()
+```
+
+## See Also
+
+- [TRef](/stm/tref) - Transactional references
+- [TMap](/stm/tmap) - Transactional maps
+- [ZSTM](/stm/zstm) - Core STM effect type
+- [STM Overview](/stm/overview) - STM concepts

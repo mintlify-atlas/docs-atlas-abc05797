@@ -1,0 +1,356 @@
+---
+title: "Spec"
+description: "API reference for ZIO Test Spec - the backbone of ZIO Test"
+---
+
+## Overview
+
+The `Spec[R, E]` type is the backbone of **ZIO Test**. Every spec is either a suite, which contains other specs, or a test. All specs require an environment of type `R` and may potentially fail with an error of type `E`.
+
+## Type Parameters
+
+- `R` - The environment type required by the spec
+- `E` - The error type that the spec may fail with
+
+## Structure
+
+A `Spec[R, E]` is defined as:
+
+```scala
+final case class Spec[-R, +E](caseValue: SpecCase[R, E, Spec[R, E]])
+```
+
+Where `SpecCase` can be one of:
+
+- **ExecCase** - Specifies execution strategy
+- **LabeledCase** - A labeled suite or test
+- **ScopedCase** - A scoped spec
+- **MultipleCase** - Multiple specs combined together
+- **TestCase** - An actual test with annotations
+
+## Core Methods
+
+### Composition
+
+#### `+`
+
+Combines two specs together.
+
+```scala
+def +[R1 <: R, E1 >: E](that: Spec[R1, E1]): Spec[R1, E1]
+```
+
+**Example:**
+```scala
+val spec1 = test("test1") { assertTrue(1 == 1) }
+val spec2 = test("test2") { assertTrue(2 == 2) }
+val combined = spec1 + spec2
+```
+
+#### `@@`
+
+Applies a test aspect to the spec.
+
+```scala
+def @@[R0 <: R1, R1 <: R, E0 >: E, E1 >: E0](
+  aspect: TestAspect[R0, R1, E0, E1]
+)(implicit trace: Trace): Spec[R1, E0]
+```
+
+**Example:**
+```scala
+test("flaky test") {
+  assertTrue(scala.util.Random.nextBoolean())
+} @@ TestAspect.flaky
+```
+
+### Annotations
+
+#### `annotate`
+
+Annotates each test in this spec with the specified test annotation.
+
+```scala
+def annotate[V](key: TestAnnotation[V], value: V)(implicit trace: Trace): Spec[R, E]
+```
+
+**Example:**
+```scala
+suite("my suite") {
+  test("test1") { assertTrue(true) }
+} annotate(TestAnnotation.tagged, Set("integration"))
+```
+
+### Filtering
+
+#### `filterLabels`
+
+Returns a new spec with only those suites and tests satisfying the specified predicate.
+
+```scala
+def filterLabels(f: String => Boolean)(implicit trace: Trace): Option[Spec[R, E]]
+```
+
+**Example:**
+```scala
+val filtered = spec.filterLabels(_.contains("integration"))
+```
+
+#### `filterTags`
+
+Returns a new spec with only those suites and tests with tags satisfying the specified predicate.
+
+```scala
+def filterTags(f: String => Boolean)(implicit trace: Trace): Option[Spec[R, E]]
+```
+
+**Example:**
+```scala
+val unitTests = spec.filterTags(_ == "unit")
+```
+
+#### `filterNotTags`
+
+Returns a new spec excluding tests with tags satisfying the predicate.
+
+```scala
+def filterNotTags(f: String => Boolean)(implicit trace: Trace): Option[Spec[R, E]]
+```
+
+### Execution
+
+#### `execute`
+
+Returns an effect that models execution of this spec.
+
+```scala
+def execute(defExec: ExecutionStrategy)(implicit trace: Trace): 
+  ZIO[R with Scope, Nothing, Spec[Any, E]]
+```
+
+#### `foreach`
+
+Iterates over the spec with sequential strategy, transforming every test.
+
+```scala
+def foreach[R1 <: R, E1](
+  failure: Cause[TestFailure[E]] => ZIO[R1, TestFailure[E1], TestSuccess],
+  success: TestSuccess => ZIO[R1, E1, TestSuccess]
+)(implicit trace: Trace): ZIO[R1 with Scope, Nothing, Spec[R1, E1]]
+```
+
+#### `foreachPar`
+
+Iterates over the spec with parallel strategy, transforming every test.
+
+```scala
+def foreachPar[R1 <: R, E1](
+  failure: Cause[TestFailure[E]] => ZIO[R1, TestFailure[E1], TestSuccess],
+  success: TestSuccess => ZIO[R1, E1, TestSuccess]
+)(implicit trace: Trace): ZIO[R1 with Scope, Nothing, Spec[R1, E1]]
+```
+
+### Environment Management
+
+#### `provideEnvironment`
+
+Provides each test in this spec with its required environment.
+
+```scala
+def provideEnvironment(r: ZEnvironment[R])(implicit trace: Trace): Spec[Any, E]
+```
+
+#### `provideLayer`
+
+Provides a layer to the spec.
+
+```scala
+def provideLayer[E1 >: E, R0](layer: ZLayer[R0, E1, R])(implicit trace: Trace): Spec[R0, E1]
+```
+
+**Example:**
+```scala
+val spec: Spec[Database, Throwable] = ???
+val dbLayer: ZLayer[Any, Throwable, Database] = ???
+
+val providedSpec = spec.provideLayer(dbLayer)
+```
+
+#### `provideLayerShared`
+
+Provides a layer to the spec, sharing services between all tests.
+
+```scala
+def provideLayerShared[E1 >: E, R0](
+  layer: ZLayer[R0, E1, R]
+)(implicit trace: Trace): Spec[R0, E1]
+```
+
+**Example:**
+```scala
+// All tests share the same database connection
+val spec = suite("database tests") {
+  test("test1") { ??? } +
+  test("test2") { ??? }
+}.provideLayerShared(dbLayer)
+```
+
+### Transformation
+
+#### `mapError`
+
+Returns a new spec with remapped errors.
+
+```scala
+def mapError[E1](f: E => E1)(implicit ev: CanFail[E], trace: Trace): Spec[R, E1]
+```
+
+#### `mapLabel`
+
+Returns a new spec with remapped labels.
+
+```scala
+def mapLabel(f: String => String)(implicit trace: Trace): Spec[R, E]
+```
+
+**Example:**
+```scala
+val spec = suite("tests") {
+  test("test1") { assertTrue(true) }
+}.mapLabel(label => s"[SUITE] $label")
+```
+
+#### `transform`
+
+Transforms the spec one layer at a time.
+
+```scala
+def transform[R1, E1](
+  f: SpecCase[R, E, Spec[R1, E1]] => SpecCase[R1, E1, Spec[R1, E1]]
+)(implicit trace: Trace): Spec[R1, E1]
+```
+
+### Conditional Execution
+
+#### `when`
+
+Runs the spec only if the specified predicate is satisfied.
+
+```scala
+def when(b: => Boolean)(implicit trace: Trace): Spec[R, E]
+```
+
+**Example:**
+```scala
+test("integration test") {
+  assertTrue(true)
+}.when(sys.env.contains("RUN_INTEGRATION_TESTS"))
+```
+
+#### `whenZIO`
+
+Runs the spec only if the specified effectual predicate is satisfied.
+
+```scala
+def whenZIO[R1 <: R, E1 >: E](b: ZIO[R1, E1, Boolean])(implicit trace: Trace): Spec[R1, E1]
+```
+
+## Companion Object
+
+### Constructors
+
+#### `test`
+
+Creates a test spec.
+
+```scala
+def test[R, E](
+  test: ZIO[R, TestFailure[E], TestSuccess], 
+  annotations: TestAnnotationMap
+)(implicit trace: Trace): Spec[R, E]
+```
+
+#### `labeled`
+
+Creates a labeled spec.
+
+```scala
+def labeled[R, E](label: String, spec: Spec[R, E]): Spec[R, E]
+```
+
+#### `multiple`
+
+Creates a spec containing multiple specs.
+
+```scala
+def multiple[R, E](specs: Chunk[Spec[R, E]]): Spec[R, E]
+```
+
+#### `scoped`
+
+Creates a scoped spec.
+
+```scala
+def scoped[R]: ScopedPartiallyApplied[R]
+```
+
+**Example:**
+```scala
+Spec.scoped[Database] {
+  ZIO.acquireRelease(openDatabase)(closeDatabase).map { db =>
+    test("query test") { ??? }
+  }
+}
+```
+
+#### `empty`
+
+An empty spec.
+
+```scala
+val empty: Spec[Any, Nothing]
+```
+
+## Common Patterns
+
+### Building Test Suites
+
+```scala
+val suite = 
+  suite("calculator tests") {
+    test("addition") {
+      assertTrue(1 + 1 == 2)
+    } +
+    test("subtraction") {
+      assertTrue(3 - 1 == 2)
+    }
+  }
+```
+
+### Applying Multiple Aspects
+
+```scala
+test("flaky timeout test") {
+  // test implementation
+  assertTrue(true)
+} @@ TestAspect.flaky @@ TestAspect.timeout(30.seconds)
+```
+
+### Nested Suites
+
+```scala
+suite("outer suite") {
+  suite("inner suite 1") {
+    test("test 1") { assertTrue(true) }
+  } +
+  suite("inner suite 2") {
+    test("test 2") { assertTrue(true) }
+  }
+}
+```
+
+## See Also
+
+- [TestAspect](/api/test-aspect) - For modifying test behavior
+- [Assertion](/api/test-assertion) - For creating test assertions
+- [Gen](/api/test-gen) - For property-based testing

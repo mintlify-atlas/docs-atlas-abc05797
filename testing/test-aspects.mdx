@@ -1,0 +1,650 @@
+---
+title: Test Aspects
+description: Modify test behavior with reusable test aspects
+---
+
+Test aspects are polymorphic functions that transform tests and test suites. They allow you to modify test behavior in a composable way, such as adding timeouts, retrying flaky tests, or running tests conditionally.
+
+## What are Test Aspects?
+
+A test aspect is a function that takes a test (or suite) and returns a modified test:
+
+```scala
+trait TestAspect[+LowerR, -UpperR, +LowerE, -UpperE] {
+  def apply[R >: LowerR <: UpperR, E >: LowerE <: UpperE](
+    spec: Spec[R, E]
+  ): Spec[R, E]
+}
+```
+
+Aspects can be applied using the `@@` operator:
+
+```scala
+test("my test") {
+  // test code
+} @@ TestAspect.timeout(60.seconds)
+```
+
+## Applying Aspects
+
+### To Individual Tests
+
+```scala
+test("slow test") {
+  ZIO.sleep(5.minutes)
+} @@ TestAspect.timeout(10.seconds)
+```
+
+### To Suites
+
+```scala
+suite("slow tests")(
+  test("test 1") { /* ... */ },
+  test("test 2") { /* ... */ }
+) @@ TestAspect.timeout(60.seconds)
+```
+
+### To Entire Spec
+
+```scala
+object MyTest extends ZIOSpecDefault {
+  override def aspects = Chunk(
+    TestAspect.timeout(60.seconds),
+    TestAspect.samples(1000)
+  )
+
+  def spec = suite("all tests")(
+    // tests will inherit the aspects
+  )
+}
+```
+
+## Composing Aspects
+
+Aspects can be composed with `@@` or `>>>`:
+
+```scala
+test("composed aspects") {
+  // test code
+} @@ TestAspect.timeout(60.seconds) @@
+     TestAspect.retries(3) @@
+     TestAspect.silent
+
+// Or use >>>
+val myAspects = 
+  TestAspect.timeout(60.seconds) >>>
+  TestAspect.retries(3) >>>
+  TestAspect.silent
+
+test("test") { /* ... */ } @@ myAspects
+```
+
+## Execution Control
+
+### Timeout
+
+Fail tests that take too long:
+
+```scala
+test("should complete quickly") {
+  ZIO.sleep(5.seconds)
+} @@ TestAspect.timeout(1.second)
+```
+
+### Retries
+
+Retry flaky tests:
+
+```scala
+// Retry up to 3 times
+test("flaky network call") {
+  makeNetworkRequest()
+} @@ TestAspect.retries(3)
+
+// Or use the flaky helper
+test("flaky test") {
+  // test code
+} @@ TestAspect.flaky
+
+// With specific number of retries
+test("very flaky") {
+  // test code
+} @@ TestAspect.flaky(10)
+```
+
+### Non-Flaky Tests
+
+Ensure tests are stable by running them multiple times:
+
+```scala
+// Run test 100 times to ensure it's stable
+test("must be stable") {
+  // test code  
+} @@ TestAspect.nonFlaky
+
+// Run specific number of times
+test("stability check") {
+  // test code
+} @@ TestAspect.nonFlaky(50)
+```
+
+### Repeat
+
+Repeat successful tests:
+
+```scala
+import zio.Schedule
+
+// Repeat 10 times
+test("repeated test") {
+  // test code
+} @@ TestAspect.repeat(Schedule.recurs(10))
+```
+
+## Execution Strategy
+
+### Sequential
+
+Run suite members sequentially:
+
+```scala
+suite("database tests")(
+  test("create table") { /* ... */ },
+  test("insert data") { /* ... */ },
+  test("query data") { /* ... */ }
+) @@ TestAspect.sequential
+```
+
+### Parallel
+
+Run suite members in parallel:
+
+```scala
+suite("independent tests")(
+  test("test 1") { /* ... */ },
+  test("test 2") { /* ... */ },
+  test("test 3") { /* ... */ }
+) @@ TestAspect.parallel
+```
+
+### Parallel with Limit
+
+```scala
+suite("rate limited tests")(
+  // tests
+) @@ TestAspect.parallelN(4)  // Run max 4 in parallel
+```
+
+## Lifecycle Hooks
+
+### Before and After
+
+<CodeGroup>
+```scala Before Each Test
+test("test") {
+  // test code
+} @@ TestAspect.before(
+  Console.printLine("Starting test")
+)
+```
+
+```scala After Each Test
+test("test") {
+  // test code
+} @@ TestAspect.after(
+  Console.printLine("Test completed")
+)
+```
+
+```scala Around Each Test
+test("test") {
+  // test code
+} @@ TestAspect.around(
+  Console.printLine("Before"),
+  Console.printLine("After")
+)
+```
+</CodeGroup>
+
+### Before/After All
+
+```scala
+suite("database tests")(
+  test("test 1") { /* ... */ },
+  test("test 2") { /* ... */ }
+) @@ TestAspect.beforeAll(Database.migrate) @@
+     TestAspect.afterAll(Database.cleanup)
+```
+
+### With Resource Management
+
+```scala
+test("test with resource") {
+  // test code that uses database
+} @@ TestAspect.aroundWith(
+  Database.acquire
+)(database => Database.release(database))
+```
+
+## Conditional Execution
+
+### Platform-Specific
+
+<Tabs>
+  <Tab title="JVM Only">
+    ```scala
+    test("JVM specific") {
+      // test code
+    } @@ TestAspect.jvmOnly
+    ```
+  </Tab>
+  <Tab title="JS Only">
+    ```scala
+    test("JavaScript specific") {
+      // test code
+    } @@ TestAspect.jsOnly
+    ```
+  </Tab>
+  <Tab title="Native Only">
+    ```scala
+    test("Native specific") {
+      // test code
+    } @@ TestAspect.nativeOnly
+    ```
+  </Tab>
+  <Tab title="Except Platform">
+    ```scala
+    test("not on JS") {
+      // test code
+    } @@ TestAspect.exceptJS
+    ```
+  </Tab>
+</Tabs>
+
+### Scala Version-Specific
+
+```scala
+test("Scala 3 only") {
+  // test code
+} @@ TestAspect.scala3Only
+
+test("Scala 2 only") {
+  // test code
+} @@ TestAspect.scala2Only
+```
+
+### Operating System
+
+```scala
+test("Unix only") {
+  // test code
+} @@ TestAspect.unix
+
+test("Windows only") {
+  // test code
+} @@ TestAspect.windows
+
+test("macOS only") {
+  // test code
+} @@ TestAspect.mac
+```
+
+### Environment Variables
+
+```scala
+test("requires CI") {
+  // test code
+} @@ TestAspect.ifEnvSet("CI")
+
+test("requires debug mode") {
+  // test code
+} @@ TestAspect.ifEnv("DEBUG")(_.contains("true"))
+```
+
+### Java Properties
+
+```scala
+test("requires property") {
+  // test code
+} @@ TestAspect.ifPropSet("test.integration")
+```
+
+## Test Services
+
+### Using Live Services
+
+Replace test services with real implementations:
+
+```scala
+test("real time") {
+  for {
+    start <- Clock.nanoTime
+    _     <- ZIO.sleep(100.millis)
+    end   <- Clock.nanoTime
+  } yield assertTrue(end - start >= 100000000L)
+} @@ TestAspect.withLiveClock
+
+// Other live services
+test("live services") {
+  // test code
+} @@ TestAspect.withLiveRandom
+  @@ TestAspect.withLiveConsole
+  @@ TestAspect.withLiveSystem
+
+// All live services
+test("fully live") {
+  // test code  
+} @@ TestAspect.withLiveEnvironment
+```
+
+### Restore Test State
+
+Restore test service state between repeats:
+
+```scala
+test("isolated repeats") {
+  for {
+    _ <- TestClock.adjust(1.hour)
+    time <- TestClock.currentTime(TimeUnit.HOURS)
+  } yield assertTrue(time == 1)
+} @@ TestAspect.nonFlaky(10) @@ TestAspect.restoreTestClock
+```
+
+## Configuration
+
+### Sample Size
+
+Set the number of samples for property-based tests:
+
+```scala
+test("property test") {
+  check(Gen.int) { n =>
+    assertTrue(n + 0 == n)
+  }
+} @@ TestAspect.samples(10000)
+```
+
+### Shrinking
+
+Set maximum shrinking attempts:
+
+```scala
+test("with shrinking") {
+  check(Gen.int) { n =>
+    assertTrue(n >= 0)
+  }
+} @@ TestAspect.shrinks(2000)
+```
+
+### Size
+
+Set the size parameter for generators:
+
+```scala
+test("large inputs") {
+  check(Gen.listOf(Gen.int)) { list =>
+    assertTrue(list.length <= 200)
+  }
+} @@ TestAspect.size(200)
+```
+
+## Debugging and Diagnostics
+
+### Debug Mode
+
+Print console output during tests:
+
+```scala
+test("with debug output") {
+  for {
+    _ <- Console.printLine("Debug message")
+  } yield assertTrue(true)
+} @@ TestAspect.debug
+```
+
+### Silent Mode
+
+Suppress console output:
+
+```scala
+test("quiet test") {
+  for {
+    _ <- Console.printLine("This won't be printed")
+  } yield assertTrue(true)
+} @@ TestAspect.silent
+```
+
+### Silent Logging
+
+Remove default loggers:
+
+```scala
+test("no logs") {
+  // test code
+} @@ TestAspect.silentLogging
+```
+
+### Timing
+
+Annotate tests with execution times:
+
+```scala
+test("timed test") {
+  // test code
+} @@ TestAspect.timed
+```
+
+### Diagnose
+
+Print fiber dumps for slow or failing tests:
+
+```scala
+test("diagnosable test") {
+  // test code
+} @@ TestAspect.diagnose(5.seconds)
+```
+
+## Ignoring Tests
+
+### Ignore
+
+Skip tests temporarily:
+
+```scala
+test("not ready yet") {
+  // test code
+} @@ TestAspect.ignore
+```
+
+### Success
+
+Fail on ignored tests (useful in CI):
+
+```scala
+object MyTest extends ZIOSpecDefault {
+  override def aspects = Chunk(TestAspect.success)
+
+  def spec = suite("no ignored tests allowed")(
+    // tests
+  )
+}
+```
+
+## Failure Expectations
+
+### Failing
+
+Expect test to fail:
+
+```scala
+test("should fail") {
+  assertTrue(1 + 1 == 3)
+} @@ TestAspect.failing
+
+// With specific failure predicate
+test("specific failure") {
+  ZIO.fail(new IOException("Network error"))
+} @@ TestAspect.failing {
+  case TestFailure.Runtime(cause, _) =>
+    cause.dieOption.exists(_.isInstanceOf[IOException])
+}
+```
+
+### Non-Termination
+
+Expect test to timeout:
+
+```scala
+test("infinite loop") {
+  ZIO.never
+} @@ TestAspect.nonTermination(1.second)
+```
+
+## Tagging
+
+Tag tests for filtering:
+
+```scala
+test("integration test") {
+  // test code  
+} @@ TestAspect.tag("integration", "slow")
+
+// Run with: testOnly -- --tags integration
+```
+
+## Annotations
+
+Add custom annotations:
+
+```scala
+test("annotated test") {
+  // test code
+} @@ TestAspect.annotate(TestAnnotation.tagged, Set("custom"))
+```
+
+## Test Randomness
+
+### Deterministic
+
+Use default seed:
+
+```scala
+test("deterministic random") {
+  for {
+    n <- Random.nextInt
+  } yield assertTrue(n == n)  // Always same value
+}
+```
+
+### Non-Deterministic
+
+Use random seed:
+
+```scala
+test("truly random") {
+  // test code with randomness
+} @@ TestAspect.nondeterministic
+```
+
+### Set Seed
+
+Use specific seed:
+
+```scala
+test("seeded random") {
+  // test code
+} @@ TestAspect.setSeed(12345L)
+```
+
+## Custom Aspects
+
+Create your own test aspects:
+
+```scala
+def withRetry[R, E](n: Int): TestAspect[Nothing, R, Nothing, E] =
+  new TestAspect[Nothing, R, Nothing, E] {
+    def some[R1 <: R, E1 >: E](spec: Spec[R1, E1]): Spec[R1, E1] =
+      spec.transform[R1, E1] {
+        case Spec.TestCase(test, annotations) =>
+          Spec.TestCase(
+            test.retry(Schedule.recurs(n)),
+            annotations
+          )
+        case c => c
+      }
+  }
+
+// Usage
+test("with custom aspect") {
+  // test code
+} @@ withRetry(5)
+```
+
+## Per-Test Aspects
+
+Create aspects that modify individual test execution:
+
+```scala
+val logTest = new TestAspect.PerTest[Nothing, Any, Nothing, Any] {
+  def perTest[R, E](
+    test: ZIO[R, TestFailure[E], TestSuccess]
+  ): ZIO[R, TestFailure[E], TestSuccess] =
+    Console.printLine("Starting test").orDie *>
+    test <*
+    Console.printLine("Finished test").orDie
+}
+```
+
+## Best Practices
+
+<AccordionGroup>
+  <Accordion title="Apply aspects at the right level">
+    Apply aspects to suites when all tests need them, to individual tests when only specific tests need them:
+    ```scala
+    // Suite-level for common behavior
+    suite("all slow tests")(
+      // tests
+    ) @@ TestAspect.timeout(60.seconds)
+    
+    // Test-level for specific needs
+    test("extra slow test") {
+      // ...
+    } @@ TestAspect.timeout(120.seconds)
+    ```
+  </Accordion>
+
+  <Accordion title="Use flaky only when necessary">
+    Prefer fixing flaky tests over using retry aspects:
+    ```scala
+    // Better: Fix the test
+    test("stable test") {
+      // properly isolated test
+    }
+    
+    // Last resort: Mark as flaky
+    test("truly flaky external service") {
+      // test external service
+    } @@ TestAspect.flaky
+    ```
+  </Accordion>
+
+  <Accordion title="Compose aspects for readability">
+    Create named aspect combinations:
+    ```scala
+    val integrationTest = 
+      TestAspect.timeout(5.minutes) >>>
+      TestAspect.sequential >>>
+      TestAspect.withLiveEnvironment
+    
+    test("database test") {
+      // ...
+    } @@ integrationTest
+    ```
+  </Accordion>
+</AccordionGroup>
+
+## See Also
+
+- [Testing Overview](/testing/overview) - Introduction to ZIO Test
+- [Assertions](/testing/assertions) - Test conditions
+- [Test Services](/testing/test-services) - Controllable test services

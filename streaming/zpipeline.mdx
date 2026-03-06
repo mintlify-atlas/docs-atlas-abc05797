@@ -1,0 +1,446 @@
+---
+title: ZPipeline
+description: A ZPipeline transforms elements from an input stream to an output stream
+---
+
+## Overview
+
+`ZPipeline[Env, Err, In, Out]` is a polymorphic stream transformer. Pipelines accept a stream as input and return a transformed stream as output. They can be thought of as reusable stream transformation recipes.
+
+Pipelines are:
+- **Reusable**: Define once, apply to many streams
+- **Composable**: Chain multiple pipelines together
+- **Type-safe**: Compile-time guarantees about transformations
+- **Efficient**: Optimized for streaming performance
+
+## Type Parameters
+
+<ParamField path="Env" type="type">
+  Environment required to run the pipeline
+</ParamField>
+
+<ParamField path="Err" type="type">
+  Error type the pipeline may fail with
+</ParamField>
+
+<ParamField path="In" type="type">
+  Type of input elements
+</ParamField>
+
+<ParamField path="Out" type="type">
+  Type of output elements
+</ParamField>
+
+## Creating Pipelines
+
+### Basic Transformations
+
+```scala
+import zio._
+import zio.stream._
+
+// Identity pipeline
+val identity: ZPipeline[Any, Nothing, Int, Int] = 
+  ZPipeline[Int]
+
+// Map pipeline
+val double: ZPipeline[Any, Nothing, Int, Int] = 
+  ZPipeline.map(_ * 2)
+
+// Filter pipeline
+val evens: ZPipeline[Any, Nothing, Int, Int] = 
+  ZPipeline.filter(_ % 2 == 0)
+
+// Collect with partial function
+val collectEvens: ZPipeline[Any, Nothing, Int, Int] = 
+  ZPipeline.collect { case n if n % 2 == 0 => n }
+```
+
+### From Functions
+
+```scala
+// From stream transformation function
+val fromFunction: ZPipeline[Any, Nothing, Int, Int] = 
+  ZPipeline.fromFunction(_.map(_ * 2))
+
+// From sink
+val batching: ZPipeline[Any, Nothing, Int, Chunk[Int]] = 
+  ZPipeline.fromSink(ZSink.collectAllN(100))
+```
+
+## Using Pipelines
+
+### Applying to Streams
+
+```scala
+val stream = ZStream(1, 2, 3, 4, 5)
+val pipeline = ZPipeline.filter[Int](_ % 2 == 0)
+
+// Method 1: >>> operator
+val result1 = stream >>> pipeline
+
+// Method 2: via method
+val result2 = stream.via(pipeline)
+
+// Method 3: pipe method
+val result3 = stream.pipe(pipeline)
+
+// All produce: ZStream(2, 4)
+```
+
+### Composing Pipelines
+
+```scala
+val filterEvens = ZPipeline.filter[Int](_ % 2 == 0)
+val double = ZPipeline.map[Int, Int](_ * 2)
+val toString = ZPipeline.map[Int, String](_.toString)
+
+// Chain pipelines with >>>
+val composed = filterEvens >>> double >>> toString
+
+// Apply to stream
+val stream = ZStream(1, 2, 3, 4, 5)
+stream >>> composed
+// ZStream("4", "8")
+```
+
+## Transformation Pipelines
+
+### Mapping
+
+```scala
+// Simple map
+val doubled = ZPipeline.map[Int, Int](_ * 2)
+
+// Effectful map
+val logged = ZPipeline.mapZIO[Any, IOException, Int, Int] { n =>
+  Console.printLine(s"Processing: $n").as(n)
+}
+
+// Parallel map
+val parallel = ZPipeline.mapZIOPar[Any, Throwable, Int, Int](8) { n =>
+  heavyComputation(n)
+}
+
+// Stateful map
+val accumulate = ZPipeline.mapAccum(0) { (sum, n: Int) =>
+  val newSum = sum + n
+  (newSum, newSum)
+}
+```
+
+### Filtering
+
+```scala
+// Basic filter
+val positives = ZPipeline.filter[Int](_ > 0)
+
+// Effectful filter
+val validated = ZPipeline.filterZIO[Any, IOException, String] { s =>
+  validateString(s)
+}
+
+// Drop and take
+val skipFirst = ZPipeline.drop[Int](10)
+val takeFirst = ZPipeline.take[Long](100)
+
+// Drop/take while
+val dropNegatives = ZPipeline.dropWhile[Int](_ < 0)
+val takePositives = ZPipeline.takeWhile[Int](_ > 0)
+```
+
+### Collecting
+
+```scala
+// Collect with partial function
+val extractInts = ZPipeline.collect[Any, Int] {
+  case s: String if s.toIntOption.isDefined => s.toInt
+}
+
+// Collect while
+val collectUntilEmpty = ZPipeline.collectWhile[String, String] {
+  case s if s.nonEmpty => s.toUpperCase
+}
+
+// Collect specific types
+val rights = ZPipeline.collectRight[String, String, Int]
+val somes = ZPipeline.collectSome[String, Int]
+```
+
+## Chunking Pipelines
+
+### Grouping
+
+```scala
+// Group into fixed-size chunks
+val batched = ZPipeline.grouped[Int](100)
+
+// Group within time window
+val timedBatches = ZPipeline.groupedWithin[Int](100, 1.second)
+
+// Group by adjacent keys
+val adjacentGroups = ZPipeline.groupAdjacentBy[Int, Int](_ / 10)
+// Input: 1,2,3,11,12,21,22
+// Output: (0, Chunk(1,2,3)), (1, Chunk(11,12)), (2, Chunk(21,22))
+```
+
+### Flattening
+
+```scala
+// Flatten chunks
+val flatten = ZPipeline.flattenChunks[Int]
+
+// Flatten iterables
+val flattenIter = ZPipeline.flattenIterables[String]
+
+// Flatten streams
+val flattenStreams = ZPipeline.flattenStreamsPar[Any, Throwable, Int](4)
+```
+
+## Text Processing Pipelines
+
+### Encoding/Decoding
+
+```scala
+import java.nio.charset.StandardCharsets
+
+// UTF-8 encoding
+val utf8Encode: ZPipeline[Any, Nothing, String, Byte] = 
+  ZPipeline.encodeStringWith(StandardCharsets.UTF_8)
+
+// UTF-8 decoding
+val utf8Decode: ZPipeline[Any, CharacterCodingException, Byte, String] = 
+  ZPipeline.decodeStringWith(StandardCharsets.UTF_8)
+
+// Character encoding
+val charEncode: ZPipeline[Any, CharacterCodingException, Char, Byte] = 
+  ZPipeline.encodeCharsWith(StandardCharsets.UTF_8)
+```
+
+### Line Processing
+
+```scala
+// Split by lines
+val lines = ZPipeline.splitLines
+
+// Usage
+val processFile = 
+  ZStream.fromFile(path)
+    .via(ZPipeline.utf8Decode)
+    .via(ZPipeline.splitLines)
+    .filter(_.nonEmpty)
+```
+
+## Aggregation Pipelines
+
+```scala
+// Aggregate async with sink
+val aggregated = ZPipeline.aggregateAsync(
+  ZSink.collectAllN[Int](100)
+)
+
+// Aggregate within time window
+val timedAgg = ZPipeline.aggregateAsyncWithin(
+  ZSink.foldLeft(0)(_ + _),
+  Schedule.fixed(1.second)
+)
+```
+
+## Advanced Pipelines
+
+### Throttling
+
+```scala
+// Shape traffic to rate limit
+val shaped = ZPipeline.throttleShape[Int](
+  units = 100,
+  duration = 1.second,
+  burst = 10
+)(_.size.toLong)
+
+// Enforce rate limit (drop excess)
+val enforced = ZPipeline.throttleEnforce[Int](
+  units = 100,
+  duration = 1.second
+)(_.size.toLong)
+```
+
+### Debouncing
+
+```scala
+// Only emit after period of silence
+val debounced = ZPipeline.debounce[Click](300.millis)
+
+// Usage for search input
+val searchPipeline = 
+  userInput
+    .via(ZPipeline.debounce(300.millis))
+    .mapZIO(query => searchAPI(query))
+```
+
+### Change Detection
+
+```scala
+// Emit only when value changes
+val changes = ZPipeline.changes[Int]
+
+// Custom equality
+val changesWith = ZPipeline.changesWith[User](
+  (u1, u2) => u1.id == u2.id
+)
+
+// Effectful equality
+val changesIO = ZPipeline.changesWithZIO[Any, Nothing, User] {
+  (u1, u2) => ZIO.succeed(u1.id == u2.id)
+}
+```
+
+## Combining Pipelines
+
+### Sequential Composition
+
+```scala
+val pipeline1 = ZPipeline.filter[Int](_ > 0)
+val pipeline2 = ZPipeline.map[Int, Int](_ * 2)
+val pipeline3 = ZPipeline.take[Int](10)
+
+// Compose with >>>
+val composed = pipeline1 >>> pipeline2 >>> pipeline3
+
+// Or with andThen
+val chained = pipeline1.andThen(pipeline2).andThen(pipeline3)
+```
+
+### With Sinks
+
+```scala
+val pipeline = ZPipeline.map[Int, Int](_ * 2)
+val sink = ZSink.sum[Int]
+
+// Compose pipeline with sink
+val pipelinedSink = pipeline >>> sink
+
+// Use with stream
+val result: ZIO[Any, Nothing, Int] = 
+  ZStream(1, 2, 3) >>> pipelinedSink
+// Result: 12 (2+4+6)
+```
+
+## Common Patterns
+
+### Data Validation Pipeline
+
+```scala
+def validationPipeline[A]: ZPipeline[Any, ValidationError, A, A] = {
+  ZPipeline.mapZIO { item =>
+    validate(item).flatMap {
+      case Valid => ZIO.succeed(item)
+      case Invalid(errors) => ZIO.fail(ValidationError(errors))
+    }
+  }
+}
+```
+
+### Batch Processing Pipeline
+
+```scala
+def batchProcessor[A, B](
+  batchSize: Int,
+  process: Chunk[A] => ZIO[Any, Throwable, Chunk[B]]
+): ZPipeline[Any, Throwable, A, B] = {
+  ZPipeline.grouped(batchSize)
+    .mapZIO(process)
+    .flattenChunks
+}
+```
+
+### Retry Pipeline
+
+```scala
+def retryingPipeline[A](
+  process: A => ZIO[Any, Throwable, A],
+  schedule: Schedule[Any, Throwable, Any]
+): ZPipeline[Any, Throwable, A, A] = {
+  ZPipeline.mapZIO { item =>
+    process(item).retry(schedule)
+  }
+}
+```
+
+### Logging Pipeline
+
+```scala
+def loggingPipeline[A]: ZPipeline[Any, IOException, A, A] = {
+  var count = 0
+  ZPipeline.mapZIO { item =>
+    count += 1
+    Console.printLine(s"[$count] Processing: $item").as(item)
+  }
+}
+```
+
+## Performance Optimization
+
+<Tip>
+  Use `mapZIOChunked` for better throughput when order doesn't matter:
+  
+  ```scala
+  // Processes elements in chunks, better throughput
+  ZPipeline.mapZIOChunked(processItem)
+  
+  // Processes elements one by one, preserves order
+  ZPipeline.mapZIO(processItem)
+  ```
+</Tip>
+
+<Tip>
+  Use `mapZIOPar` to process elements concurrently:
+  
+  ```scala
+  // Process up to 16 elements concurrently
+  ZPipeline.mapZIOPar(16)(heavyOperation)
+  ```
+</Tip>
+
+## Pipeline Operators Reference
+
+<CardGroup cols={2}>
+  <Card title="map" icon="arrow-right">
+    Transform each element
+  </Card>
+  <Card title="mapZIO" icon="magic">
+    Transform with effects
+  </Card>
+  <Card title="filter" icon="filter">
+    Keep matching elements
+  </Card>
+  <Card title="collect" icon="box">
+    Filter and transform
+  </Card>
+  <Card title="grouped" icon="layer-group">
+    Group into chunks
+  </Card>
+  <Card title="flattenChunks" icon="compress">
+    Flatten chunked structure
+  </Card>
+  <Card title="throttleShape" icon="gauge">
+    Rate limiting
+  </Card>
+  <Card title="debounce" icon="clock">
+    Emit after silence period
+  </Card>
+</CardGroup>
+
+## See Also
+
+<CardGroup cols={2}>
+  <Card title="ZStream" href="/streaming/zstream" icon="water">
+    Source of stream elements
+  </Card>
+  <Card title="ZSink" href="/streaming/zsink" icon="sink">
+    Consumer of stream elements
+  </Card>
+  <Card title="ZChannel" href="/streaming/zchannel" icon="tower-broadcast">
+    Low-level streaming primitive
+  </Card>
+</CardGroup>

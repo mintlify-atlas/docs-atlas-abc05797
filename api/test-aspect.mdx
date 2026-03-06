@@ -1,0 +1,767 @@
+---
+title: "TestAspect"
+description: "API reference for ZIO Test TestAspect - aspects for modifying test behavior"
+---
+
+## Overview
+
+A `TestAspect` is an aspect that can be weaved into specs to modify test behavior. You can think of an aspect as a polymorphic function capable of transforming one test into another, possibly enlarging the environment or error type.
+
+## Type Definition
+
+```scala
+abstract class TestAspect[+LowerR, -UpperR, +LowerE, -UpperE]
+```
+
+## Type Parameters
+
+- `LowerR` - The lower bound on the environment type
+- `UpperR` - The upper bound on the environment type
+- `LowerE` - The lower bound on the error type
+- `UpperE` - The upper bound on the error type
+
+## Core Methods
+
+### `apply` / `@@`
+
+Applies the aspect to every test in a spec.
+
+```scala
+def apply[R >: LowerR <: UpperR, E >: LowerE <: UpperE](
+  spec: Spec[R, E]
+)(implicit trace: Trace): Spec[R, E]
+```
+
+**Example:**
+```scala
+test("my test") {
+  assertTrue(true)
+} @@ TestAspect.timeout(60.seconds)
+```
+
+### `>>>`
+
+Composes two aspects sequentially.
+
+```scala
+def >>>[LowerR1 >: LowerR, UpperR1 <: UpperR, LowerE1 >: LowerE, UpperE1 <: UpperE](
+  that: TestAspect[LowerR1, UpperR1, LowerE1, UpperE1]
+): TestAspect[LowerR1, UpperR1, LowerE1, UpperE1]
+```
+
+**Example:**
+```scala
+val aspect = TestAspect.timeout(10.seconds) >>> TestAspect.flaky
+```
+
+## Built-in Aspects
+
+### Execution Control
+
+#### `timeout`
+
+Times out tests using the specified duration.
+
+```scala
+def timeout(duration: Duration): TestAspectPoly
+```
+
+**Example:**
+```scala
+test("long running test") {
+  ZIO.sleep(5.seconds) *> assertTrue(true)
+} @@ TestAspect.timeout(10.seconds)
+```
+
+#### `diagnose`
+
+Runs each test on a separate fiber and prints a fiber dump if the test fails or hasn't terminated.
+
+```scala
+def diagnose(duration: Duration): TestAspectPoly
+```
+
+#### `forked`
+
+Runs each test on its own separate fiber.
+
+```scala
+val forked: TestAspectPoly
+```
+
+**Example:**
+```scala
+suite("concurrent tests") {
+  test("test1") { ??? } +
+  test("test2") { ??? }
+} @@ TestAspect.forked
+```
+
+### Retry Logic
+
+#### `flaky`
+
+Retries a test until success, with a default limit.
+
+```scala
+val flaky: TestAspectPoly
+def flaky(n: Int): TestAspectPoly
+```
+
+**Example:**
+```scala
+test("flaky external API call") {
+  // test that might fail occasionally
+  assertTrue(externalAPI.call())
+} @@ TestAspect.flaky(5)
+```
+
+#### `retry`
+
+Retries failed tests according to a schedule.
+
+```scala
+def retry[R0, E0](schedule: Schedule[R0, TestFailure[E0], Any]): TestAspect[Nothing, R0, Nothing, E0]
+```
+
+**Example:**
+```scala
+test("retry with backoff") {
+  assertTrue(unstableTest())
+} @@ TestAspect.retry(Schedule.exponential(1.second) && Schedule.recurs(3))
+```
+
+#### `eventually`
+
+Retries a test until success, without limit.
+
+```scala
+val eventually: TestAspectPoly
+```
+
+### Stability Testing
+
+#### `nonFlaky`
+
+Repeats the test a default number of times, ensuring stability.
+
+```scala
+val nonFlaky: TestAspectPoly
+def nonFlaky(n: Int): TestAspectPoly
+```
+
+**Example:**
+```scala
+test("must pass 100 times") {
+  assertTrue(stableOperation())
+} @@ TestAspect.nonFlaky(100)
+```
+
+#### `repeat`
+
+Repeats successful tests according to a schedule.
+
+```scala
+def repeat[R0](schedule: Schedule[R0, TestSuccess, Any]): TestAspectAtLeastR[R0]
+```
+
+### Execution Strategy
+
+#### `sequential`
+
+Executes suite members sequentially.
+
+```scala
+val sequential: TestAspectPoly
+```
+
+**Example:**
+```scala
+suite("database tests") {
+  test("test1") { ??? } +
+  test("test2") { ??? }
+} @@ TestAspect.sequential
+```
+
+#### `parallel`
+
+Executes suite members in parallel.
+
+```scala
+val parallel: TestAspectPoly
+```
+
+#### `parallelN`
+
+Executes suite members in parallel, up to N concurrent fibers.
+
+```scala
+def parallelN(n: Int): TestAspectPoly
+```
+
+**Example:**
+```scala
+suite("parallel tests") {
+  // Run up to 4 tests concurrently
+  test("test1") { ??? } +
+  test("test2") { ??? } +
+  test("test3") { ??? } +
+  test("test4") { ??? }
+} @@ TestAspect.parallelN(4)
+```
+
+### Lifecycle Hooks
+
+#### `before`
+
+Runs the specified effect before every test.
+
+```scala
+def before[R0, E0](effect: ZIO[R0, E0, Any]): TestAspect[Nothing, R0, E0, Any]
+```
+
+**Example:**
+```scala
+suite("database tests") {
+  test("query1") { ??? } +
+  test("query2") { ??? }
+} @@ TestAspect.before(Database.resetTestData)
+```
+
+#### `after`
+
+Runs the specified effect after every test.
+
+```scala
+def after[R0, E0](effect: ZIO[R0, E0, Any]): TestAspect[Nothing, R0, E0, Any]
+```
+
+#### `beforeAll`
+
+Runs the specified effect once before all tests.
+
+```scala
+def beforeAll[R0, E0](effect: ZIO[R0, E0, Any]): TestAspect[Nothing, R0, E0, Any]
+```
+
+**Example:**
+```scala
+suite("integration tests") {
+  test("test1") { ??? } +
+  test("test2") { ??? }
+} @@ TestAspect.beforeAll(startServer)
+```
+
+#### `afterAll`
+
+Runs the specified effect once after all tests.
+
+```scala
+def afterAll[R0](effect: ZIO[R0, Nothing, Any]): TestAspect[Nothing, R0, Nothing, Any]
+```
+
+#### `around`
+
+Evaluates every test between two effects.
+
+```scala
+def around[R0, E0](
+  before: ZIO[R0, E0, Any], 
+  after: ZIO[R0, Nothing, Any]
+): TestAspect[Nothing, R0, E0, Any]
+```
+
+#### `aroundWith`
+
+Evaluates every test between two effects, where `after` can use the result of `before`.
+
+```scala
+def aroundWith[R0, E0, A0](
+  before: ZIO[R0, E0, A0]
+)(after: A0 => ZIO[R0, Nothing, Any]): TestAspect[Nothing, R0, E0, Any]
+```
+
+**Example:**
+```scala
+suite("tests with transaction") {
+  test("test1") { ??? }
+} @@ TestAspect.aroundWith(beginTransaction) { tx =>
+  rollbackTransaction(tx)
+}
+```
+
+### Conditional Execution
+
+#### `failing`
+
+Makes a test that failed pass (and vice versa).
+
+```scala
+val failing: TestAspectPoly
+def failing[E0](assertion: TestFailure[E0] => Boolean): TestAspect[Nothing, Any, Nothing, E0]
+```
+
+**Example:**
+```scala
+test("should fail") {
+  assertTrue(1 == 2)
+} @@ TestAspect.failing
+```
+
+#### `ignore`
+
+Marks tests as ignored.
+
+```scala
+val ignore: TestAspectPoly
+```
+
+**Example:**
+```scala
+test("work in progress") {
+  // Not ready yet
+  assertTrue(false)
+} @@ TestAspect.ignore
+```
+
+### Platform-Specific
+
+#### `jvmOnly`
+
+Runs tests only on the JVM.
+
+```scala
+val jvmOnly: TestAspectPoly
+```
+
+**Example:**
+```scala
+test("JVM-specific test") {
+  // Uses java.nio or other JVM-specific APIs
+  assertTrue(true)
+} @@ TestAspect.jvmOnly
+```
+
+#### `jsOnly`
+
+Runs tests only on ScalaJS.
+
+```scala
+val jsOnly: TestAspectPoly
+```
+
+#### `nativeOnly`
+
+Runs tests only on Scala Native.
+
+```scala
+val nativeOnly: TestAspectPoly
+```
+
+#### `exceptJS`
+
+Runs tests on all platforms except ScalaJS.
+
+```scala
+val exceptJS: TestAspectPoly
+```
+
+#### `exceptJVM`
+
+Runs tests on all platforms except JVM.
+
+```scala
+val exceptJVM: TestAspectPoly
+```
+
+#### `exceptNative`
+
+Runs tests on all platforms except Scala Native.
+
+```scala
+val exceptNative: TestAspectPoly
+```
+
+### Scala Version-Specific
+
+#### `scala2Only`
+
+Runs tests only on Scala 2.
+
+```scala
+val scala2Only: TestAspectPoly
+```
+
+#### `scala3Only`
+
+Runs tests only on Scala 3.
+
+```scala
+val scala3Only: TestAspectPoly
+```
+
+#### `scala212Only`, `scala213Only`
+
+Runs tests only on specific Scala versions.
+
+```scala
+val scala212Only: TestAspectPoly
+val scala213Only: TestAspectPoly
+```
+
+### Operating System
+
+#### `unix`
+
+Runs tests only on Unix/Linux.
+
+```scala
+val unix: TestAspectPoly
+```
+
+#### `windows`
+
+Runs tests only on Windows.
+
+```scala
+val windows: TestAspectPoly
+```
+
+#### `mac`
+
+Runs tests only on macOS.
+
+```scala
+val mac: TestAspectPoly
+```
+
+### Environment-Based
+
+#### `ifEnv`
+
+Runs tests only if an environment variable satisfies a condition.
+
+```scala
+def ifEnv(env: String)(assertion: String => Boolean): TestAspectPoly
+```
+
+**Example:**
+```scala
+test("integration test") {
+  assertTrue(true)
+} @@ TestAspect.ifEnv("ENV")(_.contains("test"))
+```
+
+#### `ifEnvSet`
+
+Runs tests only if an environment variable is set.
+
+```scala
+def ifEnvSet(env: String): TestAspectPoly
+```
+
+#### `ifProp`
+
+Runs tests only if a Java property satisfies a condition.
+
+```scala
+def ifProp(prop: String)(assertion: String => Boolean): TestAspectPoly
+```
+
+### Test Configuration
+
+#### `samples`
+
+Sets the number of samples for property-based tests.
+
+```scala
+def samples(n: Int): TestAspectPoly
+```
+
+**Example:**
+```scala
+test("property") {
+  check(Gen.int) { n => assertTrue(n == n) }
+} @@ TestAspect.samples(1000)
+```
+
+#### `shrinks`
+
+Sets the maximum number of shrinkings for failures.
+
+```scala
+def shrinks(n: Int): TestAspectPoly
+```
+
+#### `size`
+
+Sets the size parameter for generators.
+
+```scala
+def size(n: Int): TestAspectPoly
+```
+
+**Example:**
+```scala
+test("with small lists") {
+  check(Gen.listOf(Gen.int)) { list =>
+    assertTrue(list.size <= 10)
+  }
+} @@ TestAspect.size(10)
+```
+
+### Annotations
+
+#### `tag`
+
+Annotates tests with string tags.
+
+```scala
+def tag(tag: String, tags: String*): TestAspectPoly
+```
+
+**Example:**
+```scala
+test("integration test") {
+  assertTrue(true)
+} @@ TestAspect.tag("integration", "slow")
+```
+
+#### `annotate`
+
+Annotates tests with custom annotations.
+
+```scala
+def annotate[V](key: TestAnnotation[V], value: V): TestAspectPoly
+```
+
+#### `timed`
+
+Annotates tests with their execution times.
+
+```scala
+val timed: TestAspectPoly
+```
+
+### Environment Management
+
+#### `fromLayer`
+
+Provides each test with a layer.
+
+```scala
+def fromLayer[R0, E0](layer: ZLayer[R0, E0, Any]): TestAspect[Nothing, R0, E0, Any]
+```
+
+**Example:**
+```scala
+val dbLayer: ZLayer[Any, Throwable, Database] = ???
+
+suite("database tests") {
+  test("query") {
+    for {
+      db <- ZIO.service[Database]
+      result <- db.query("SELECT * FROM users")
+    } yield assertTrue(result.nonEmpty)
+  }
+} @@ TestAspect.fromLayer(dbLayer)
+```
+
+#### `fromLayerShared`
+
+Provides all tests with a shared layer.
+
+```scala
+def fromLayerShared[R0, E0](layer: ZLayer[R0, E0, Any]): TestAspect[Nothing, R0, E0, Any]
+```
+
+### Test Services
+
+#### `withLiveClock`
+
+Runs tests with the live clock service.
+
+```scala
+val withLiveClock: TestAspectPoly
+```
+
+**Example:**
+```scala
+test("actual time") {
+  for {
+    start <- Clock.currentTime(TimeUnit.MILLISECONDS)
+    _ <- ZIO.sleep(100.millis)
+    end <- Clock.currentTime(TimeUnit.MILLISECONDS)
+  } yield assertTrue((end - start) >= 100)
+} @@ TestAspect.withLiveClock
+```
+
+#### `withLiveConsole`
+
+Runs tests with the live console service.
+
+```scala
+val withLiveConsole: TestAspectPoly
+```
+
+#### `withLiveRandom`
+
+Runs tests with the live random service.
+
+```scala
+val withLiveRandom: TestAspectPoly
+```
+
+#### `withLiveSystem`
+
+Runs tests with the live system service.
+
+```scala
+val withLiveSystem: TestAspectPoly
+```
+
+#### `withLiveEnvironment`
+
+Runs tests with all live default ZIO services.
+
+```scala
+val withLiveEnvironment: TestAspectPoly
+```
+
+### Test State Management
+
+#### `restoreTestClock`
+
+Restores TestClock state after each test.
+
+```scala
+val restoreTestClock: TestAspectPoly
+```
+
+#### `restoreTestConsole`
+
+Restores TestConsole state after each test.
+
+```scala
+val restoreTestConsole: TestAspectPoly
+```
+
+#### `restoreTestRandom`
+
+Restores TestRandom state after each test.
+
+```scala
+val restoreTestRandom: TestAspectPoly
+```
+
+#### `restoreTestEnvironment`
+
+Restores all test environment state after each test.
+
+```scala
+val restoreTestEnvironment: TestAspectPoly
+```
+
+### Output Control
+
+#### `debug`
+
+Runs tests with TestConsole in debug mode (output to stdout).
+
+```scala
+val debug: TestAspectPoly
+```
+
+**Example:**
+```scala
+test("debug output") {
+  for {
+    _ <- Console.printLine("This will be printed")
+  } yield assertTrue(true)
+} @@ TestAspect.debug
+```
+
+#### `silent`
+
+Runs tests with TestConsole in silent mode (no stdout).
+
+```scala
+val silent: TestAspectPoly
+```
+
+#### `silentLogging`
+
+Removes default console logger.
+
+```scala
+val silentLogging: TestAspectPoly
+```
+
+### Miscellaneous
+
+#### `setSeed`
+
+Sets the TestRandom seed before each test.
+
+```scala
+def setSeed(seed: => Long): TestAspectPoly
+```
+
+**Example:**
+```scala
+test("deterministic random") {
+  check(Gen.int) { n => assertTrue(n >= 0) }
+} @@ TestAspect.setSeed(12345L)
+```
+
+#### `nondeterministic`
+
+Sets TestRandom seed to a random value before each test.
+
+```scala
+val nondeterministic: TestAspectPoly
+```
+
+#### `success`
+
+Converts ignored tests into test failures.
+
+```scala
+val success: TestAspectPoly
+```
+
+## Common Patterns
+
+### Combining Multiple Aspects
+
+```scala
+test("complex test") {
+  assertTrue(true)
+} @@ TestAspect.timeout(30.seconds) 
+   @@ TestAspect.flaky(3) 
+   @@ TestAspect.tag("integration")
+```
+
+### Conditional Aspects
+
+```scala
+val dbTests = suite("database tests") {
+  test("test1") { ??? } +
+  test("test2") { ??? }
+} @@ TestAspect.ifEnvSet("DB_URL")
+```
+
+### Layer Management
+
+```scala
+val tests = suite("service tests") {
+  test("test1") { ??? } +
+  test("test2") { ??? }
+} @@ TestAspect.fromLayerShared(serviceLayer)
+```
+
+## See Also
+
+- [Spec](/api/test-spec) - For building test suites
+- [Assertion](/api/test-assertion) - For creating test assertions
+- [Gen](/api/test-gen) - For property-based testing

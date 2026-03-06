@@ -1,0 +1,330 @@
+---
+title: Error Handling Patterns
+description: Best practices for handling errors in ZIO applications
+---
+
+## Overview
+
+Effective error handling is crucial for building robust ZIO applications. This guide covers patterns and best practices for managing errors using ZIO's type-safe error channel.
+
+## The Error Channel
+
+ZIO uses a dedicated error channel (the `E` type parameter in `ZIO[R, E, A]`) to track errors at compile time, ensuring you handle all potential failures.
+
+<Note>
+The error channel makes failures explicit and type-safe, unlike exceptions which can occur anywhere.
+</Note>
+
+## Pattern 1: Typed Errors vs Throwable
+
+### Bad Practice: Using Throwable Everywhere
+
+```scala
+import zio._
+
+def fetchUser(id: String): ZIO[Any, Throwable, User] = 
+  ZIO.attempt {
+    // Multiple failure modes hidden in Throwable
+    if (id.isEmpty) throw new IllegalArgumentException("Empty ID")
+    if (!userExists(id)) throw new RuntimeException("User not found")
+    getUser(id)
+  }
+```
+
+<Warning>
+Using `Throwable` loses type safety and makes it unclear what errors can occur.
+</Warning>
+
+### Good Practice: Use Typed Errors
+
+```scala
+import zio._
+
+sealed trait UserError
+case class InvalidUserId(id: String) extends UserError
+case class UserNotFound(id: String) extends UserError
+case class DatabaseError(cause: String) extends UserError
+
+def fetchUser(id: String): ZIO[Any, UserError, User] = 
+  for {
+    _    <- ZIO.fail(InvalidUserId(id)).when(id.isEmpty)
+    exists <- checkUserExists(id)
+    _    <- ZIO.fail(UserNotFound(id)).unless(exists)
+    user <- getUser(id).mapError(e => DatabaseError(e.getMessage))
+  } yield user
+```
+
+<Tip>
+Typed errors make it clear what can go wrong and enable exhaustive pattern matching on failures.
+</Tip>
+
+## Pattern 2: Error Recovery
+
+### Fallback Values
+
+```scala
+import zio._
+
+// Provide a default value on any error
+val withDefault: ZIO[Any, Nothing, User] = 
+  fetchUser("123").orElse(ZIO.succeed(User.guest))
+
+// Provide default only for specific errors
+val withFallback: ZIO[Any, UserError, User] = 
+  fetchUser("123").catchSome {
+    case UserNotFound(_) => ZIO.succeed(User.guest)
+  }
+```
+
+### Retry Logic
+
+```scala
+import zio._
+import zio.Schedule
+
+// Retry transient failures with exponential backoff
+val withRetry: ZIO[Any, UserError, User] = 
+  fetchUser("123")
+    .retry(Schedule.exponential(100.millis) && Schedule.recurs(3))
+    .tapError(err => ZIO.logError(s"Failed after retries: $err"))
+
+// Retry only specific errors
+val selectiveRetry: ZIO[Any, UserError, User] = 
+  fetchUser("123").retryWhile {
+    case DatabaseError(_) => true
+    case _ => false
+  }
+```
+
+<Note>
+Use retry for transient failures like network issues, but not for permanent failures like validation errors.
+</Note>
+
+## Pattern 3: Error Transformation
+
+### Mapping Errors
+
+```scala
+import zio._
+
+// Convert domain errors to HTTP responses
+sealed trait HttpError
+case class BadRequest(message: String) extends HttpError
+case class NotFound(message: String) extends HttpError
+case class InternalError(message: String) extends HttpError
+
+def toHttpError(error: UserError): HttpError = error match {
+  case InvalidUserId(id) => BadRequest(s"Invalid user ID: $id")
+  case UserNotFound(id) => NotFound(s"User not found: $id")
+  case DatabaseError(cause) => InternalError(s"Database error: $cause")
+}
+
+val httpResponse: ZIO[Any, HttpError, User] = 
+  fetchUser("123").mapError(toHttpError)
+```
+
+### Absorbing Errors
+
+```scala
+import zio._
+
+// Convert typed errors back to defects (use sparingly)
+val absorbed: ZIO[Any, Nothing, Option[User]] = 
+  fetchUser("123")
+    .fold(
+      error => {
+        // Log and convert to None
+        println(s"Error: $error")
+        None
+      },
+      user => Some(user)
+    )
+```
+
+<Warning>
+Only absorb errors when you've properly handled them. Don't hide failures without logging or recovery.
+</Warning>
+
+## Pattern 4: Error Accumulation
+
+### Collecting Errors
+
+```scala
+import zio._
+
+// Bad: Fails on first error
+val failFast: ZIO[Any, UserError, List[User]] = 
+  ZIO.foreach(userIds)(fetchUser)
+
+// Good: Collect all errors
+val collectErrors: ZIO[Any, Nothing, (List[UserError], List[User])] = 
+  ZIO.partition(userIds)(fetchUser)
+
+// Use validation for accumulating errors
+import zio.prelude._
+
+val validated: ZIO[Any, ::[UserError], List[User]] = 
+  Validation.validateAll(
+    userIds.map(id => Validation.fromEither(fetchUser(id).either))
+  ).toZIO
+```
+
+<Tip>
+Use error accumulation for validation scenarios where you want to report all errors at once.
+</Tip>
+
+## Pattern 5: Contextual Error Information
+
+### Adding Context
+
+```scala
+import zio._
+
+// Bad: Losing context
+val noContext: ZIO[Any, UserError, User] = 
+  fetchUser(userId)
+
+// Good: Enrich errors with context
+val withContext: ZIO[Any, UserError, User] = 
+  fetchUser(userId)
+    .mapError {
+      case UserNotFound(_) => 
+        UserNotFound(s"User $userId not found in tenant ${tenantId}")
+      case other => other
+    }
+    .tapError(err => ZIO.logError(s"Failed to fetch user $userId: $err"))
+```
+
+### Using Cause for Debug Info
+
+```scala
+import zio._
+
+// Inspect the full error cause including stack traces
+val withCauseLogging: ZIO[Any, UserError, User] = 
+  fetchUser(userId)
+    .tapErrorCause(cause => 
+      ZIO.logErrorCause(s"User fetch failed", cause)
+    )
+
+// Convert cause to a detailed error report
+val detailedError: ZIO[Any, Nothing, Either[String, User]] = 
+  fetchUser(userId).sandbox.either.map {
+    case Left(cause) => Left(cause.prettyPrint)
+    case Right(user) => Right(user)
+  }
+```
+
+## Pattern 6: Handling External Exceptions
+
+### Converting Exceptions to Typed Errors
+
+```scala
+import zio._
+import java.sql.SQLException
+import java.io.IOException
+
+// Bad: Leaving exceptions untyped
+val untyped: ZIO[Any, Throwable, Data] = 
+  ZIO.attempt(externalLibrary.fetchData())
+
+// Good: Convert to typed errors at boundaries
+val typed: ZIO[Any, UserError, Data] = 
+  ZIO.attempt(externalLibrary.fetchData())
+    .refineOrDie {
+      case e: SQLException => DatabaseError(e.getMessage)
+      case e: IOException => DatabaseError(s"IO error: ${e.getMessage}")
+    }
+```
+
+<Note>
+Convert external exceptions to typed errors at your application boundaries.
+</Note>
+
+## Pattern 7: Failing Fast vs Resilience
+
+### When to Fail Fast
+
+```scala
+import zio._
+
+// Fail immediately on invalid input
+def processOrder(order: Order): ZIO[Any, OrderError, Receipt] = 
+  for {
+    _ <- validateOrder(order) // Fail fast on validation
+    _ <- reserveInventory(order).retry(Schedule.recurs(3)) // Retry transient failures
+    receipt <- chargeCustomer(order)
+  } yield receipt
+```
+
+### When to Be Resilient
+
+```scala
+import zio._
+
+// Background job that should keep running
+def processQueue: ZIO[Any, Nothing, Unit] = 
+  (for {
+    message <- pullMessage
+    _ <- processMessage(message)
+      .catchAll(err => 
+        ZIO.logError(s"Failed to process message: $err")
+      )
+  } yield ()).forever
+```
+
+<Tip>
+Fail fast for user-facing operations to provide quick feedback. Be resilient for background jobs and services.
+</Tip>
+
+## Pattern 8: Error Reporting
+
+### Structured Error Logging
+
+```scala
+import zio._
+import zio.logging._
+
+def handleError[R, A](
+  operation: String
+)(effect: ZIO[R, UserError, A]): ZIO[R with LogAnnotation, UserError, A] = 
+  effect.tapError { error =>
+    ZIO.logError(s"Operation failed: $operation") @@ 
+      LogAnnotation("error_type", error.getClass.getSimpleName) @@
+      LogAnnotation("operation", operation)
+  }
+```
+
+### Error Metrics
+
+```scala
+import zio._
+import zio.metrics._
+
+val errorCounter = Metric.counter("user_errors_total")
+  .tagged("error_type", "unknown")
+
+def trackErrors[R, A](
+  effect: ZIO[R, UserError, A]
+): ZIO[R, UserError, A] = 
+  effect.tapError { error =>
+    errorCounter
+      .tagged("error_type", error.getClass.getSimpleName)
+      .increment
+  }
+```
+
+## Best Practices Summary
+
+<Note>
+**Key Takeaways:**
+
+1. Use typed errors instead of `Throwable` for better type safety
+2. Provide meaningful error types that represent different failure modes
+3. Use appropriate recovery strategies (fallback, retry, circuit breaker)
+4. Add context to errors for better debugging
+5. Convert external exceptions to typed errors at boundaries
+6. Choose between failing fast and resilience based on use case
+7. Log and monitor errors with proper context and metrics
+8. Use error accumulation for validation scenarios
+</Note>

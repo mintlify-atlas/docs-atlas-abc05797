@@ -1,0 +1,770 @@
+---
+title: "Assertion"
+description: "API reference for ZIO Test Assertions - powerful and composable test assertions"
+---
+
+## Overview
+
+The `Assertion[A]` type represents a test assertion that can be used to verify properties of values of type `A`. Assertions in ZIO Test are:
+
+- **Composable** - Combine assertions with `&&`, `||`, and `!`
+- **Type-safe** - Assertions are typed and checked at compile time
+- **Informative** - Provide detailed error messages on failure
+
+## Type Definition
+
+```scala
+final case class Assertion[-A](arrow: TestArrow[A, Boolean])
+```
+
+## Core Methods
+
+### Composition
+
+#### `&&`
+
+Combines two assertions with logical AND.
+
+```scala
+def &&[A1 <: A](that: Assertion[A1]): Assertion[A1]
+```
+
+**Example:**
+```scala
+val assertion = isGreaterThan(0) && isLessThan(10)
+assert(5)(assertion)
+```
+
+#### `||`
+
+Combines two assertions with logical OR.
+
+```scala
+def ||[A1 <: A](that: Assertion[A1]): Assertion[A1]
+```
+
+**Example:**
+```scala
+val assertion = equalTo(0) || equalTo(1)
+assert(0)(assertion)
+```
+
+#### `unary_!` / `negate`
+
+Negates an assertion.
+
+```scala
+def unary_! : Assertion[A]
+def negate: Assertion[A]
+```
+
+**Example:**
+```scala
+val assertion = !equalTo(5)
+assert(3)(assertion) // passes
+```
+
+### Testing
+
+#### `test`
+
+Tests if a value satisfies the assertion.
+
+```scala
+def test(value: A)(implicit sourceLocation: SourceLocation): Boolean
+```
+
+#### `run`
+
+Runs the assertion and returns a `TestResult`.
+
+```scala
+def run(value: => A)(implicit sourceLocation: SourceLocation): TestResult
+```
+
+## Standard Assertions
+
+### Equality
+
+#### `equalTo`
+
+Asserts that a value equals the specified value.
+
+```scala
+def equalTo[A](expected: A): Assertion[A]
+```
+
+**Example:**
+```scala
+assert("hello")(equalTo("hello"))
+```
+
+#### `equalsIgnoreCase`
+
+Asserts that strings are equal ignoring case.
+
+```scala
+def equalsIgnoreCase(other: String): Assertion[String]
+```
+
+**Example:**
+```scala
+assert("HELLO")(equalsIgnoreCase("hello"))
+```
+
+### Comparison
+
+#### `isGreaterThan`
+
+Asserts that a value is greater than the reference value.
+
+```scala
+def isGreaterThan[A](reference: A)(implicit ord: Ordering[A]): Assertion[A]
+```
+
+**Example:**
+```scala
+assert(10)(isGreaterThan(5))
+```
+
+#### `isGreaterThanEqualTo`
+
+Asserts that a value is greater than or equal to the reference value.
+
+```scala
+def isGreaterThanEqualTo[A](reference: A)(implicit ord: Ordering[A]): Assertion[A]
+```
+
+#### `isLessThan`
+
+Asserts that a value is less than the reference value.
+
+```scala
+def isLessThan[A](reference: A)(implicit ord: Ordering[A]): Assertion[A]
+```
+
+#### `isLessThanEqualTo`
+
+Asserts that a value is less than or equal to the reference value.
+
+```scala
+def isLessThanEqualTo[A](reference: A)(implicit ord: Ordering[A]): Assertion[A]
+```
+
+#### `isWithin`
+
+Asserts that a value falls within a specified range (inclusive).
+
+```scala
+def isWithin[A](min: A, max: A)(implicit ord: Ordering[A]): Assertion[A]
+```
+
+**Example:**
+```scala
+assert(5)(isWithin(1, 10))
+```
+
+#### `approximatelyEquals`
+
+Asserts that a numeric value matches a reference value within a tolerance.
+
+```scala
+def approximatelyEquals[A: Numeric](reference: A, tolerance: A): Assertion[A]
+```
+
+**Example:**
+```scala
+assert(3.14159)(approximatelyEquals(3.14, 0.01))
+```
+
+### Numeric
+
+#### `isPositive`
+
+Asserts that a numeric value is positive.
+
+```scala
+def isPositive[A](implicit num: Numeric[A]): Assertion[A]
+```
+
+#### `isNegative`
+
+Asserts that a numeric value is negative.
+
+```scala
+def isNegative[A](implicit num: Numeric[A]): Assertion[A]
+```
+
+#### `isZero`
+
+Asserts that a numeric value is zero.
+
+```scala
+def isZero[A](implicit num: Numeric[A]): Assertion[A]
+```
+
+#### `nonNegative`
+
+Asserts that a numeric value is non-negative.
+
+```scala
+def nonNegative[A](implicit num: Numeric[A]): Assertion[A]
+```
+
+#### `nonPositive`
+
+Asserts that a numeric value is non-positive.
+
+```scala
+def nonPositive[A](implicit num: Numeric[A]): Assertion[A]
+```
+
+### Boolean
+
+#### `isTrue`
+
+Asserts that a boolean value is true.
+
+```scala
+val isTrue: Assertion[Boolean]
+```
+
+**Example:**
+```scala
+assert(1 + 1 == 2)(isTrue)
+```
+
+#### `isFalse`
+
+Asserts that a boolean value is false.
+
+```scala
+val isFalse: Assertion[Boolean]
+```
+
+### Collections
+
+#### `contains`
+
+Asserts that an iterable contains the specified element.
+
+```scala
+def contains[A](element: A): Assertion[Iterable[A]]
+```
+
+**Example:**
+```scala
+assert(List(1, 2, 3))(contains(2))
+```
+
+#### `exists`
+
+Asserts that an iterable contains an element satisfying an assertion.
+
+```scala
+def exists[A](assertion: Assertion[A]): Assertion[Iterable[A]]
+```
+
+**Example:**
+```scala
+assert(List(1, 2, 3))(exists(isGreaterThan(2)))
+```
+
+#### `forall`
+
+Asserts that all elements of an iterable satisfy an assertion.
+
+```scala
+def forall[A](assertion: Assertion[A]): Assertion[Iterable[A]]
+```
+
+**Example:**
+```scala
+assert(List(2, 4, 6))(forall(isGreaterThan(0)))
+```
+
+#### `isEmpty`
+
+Asserts that an iterable is empty.
+
+```scala
+val isEmpty: Assertion[Iterable[Any]]
+```
+
+#### `isNonEmpty`
+
+Asserts that an iterable is non-empty.
+
+```scala
+val isNonEmpty: Assertion[Iterable[Any]]
+```
+
+#### `hasSize`
+
+Asserts that an iterable has a size satisfying the specified assertion.
+
+```scala
+def hasSize[A](assertion: Assertion[Int]): Assertion[Iterable[A]]
+```
+
+**Example:**
+```scala
+assert(List(1, 2, 3))(hasSize(equalTo(3)))
+```
+
+#### `hasFirst`
+
+Asserts that an iterable's first element satisfies an assertion.
+
+```scala
+def hasFirst[A](assertion: Assertion[A]): Assertion[Iterable[A]]
+```
+
+**Example:**
+```scala
+assert(List(1, 2, 3))(hasFirst(equalTo(1)))
+```
+
+#### `hasLast`
+
+Asserts that an iterable's last element satisfies an assertion.
+
+```scala
+def hasLast[A](assertion: Assertion[A]): Assertion[Iterable[A]]
+```
+
+#### `hasAt`
+
+Asserts that an element at a specific position satisfies an assertion.
+
+```scala
+def hasAt[A](pos: Int)(assertion: Assertion[A]): Assertion[Seq[A]]
+```
+
+**Example:**
+```scala
+assert(List(1, 2, 3))(hasAt(1)(equalTo(2)))
+```
+
+#### `hasSameElements`
+
+Asserts that two iterables have the same elements (order doesn't matter).
+
+```scala
+def hasSameElements[A](other: Iterable[A]): Assertion[Iterable[A]]
+```
+
+**Example:**
+```scala
+assert(List(1, 2, 3))(hasSameElements(List(3, 2, 1)))
+```
+
+#### `isSorted`
+
+Asserts that an iterable is sorted.
+
+```scala
+def isSorted[A](implicit ord: Ordering[A]): Assertion[Iterable[A]]
+```
+
+**Example:**
+```scala
+assert(List(1, 2, 3))(isSorted)
+```
+
+#### `isDistinct`
+
+Asserts that an iterable has distinct elements.
+
+```scala
+val isDistinct: Assertion[Iterable[Any]]
+```
+
+### Strings
+
+#### `containsString`
+
+Asserts that a string contains a substring.
+
+```scala
+def containsString(element: String): Assertion[String]
+```
+
+**Example:**
+```scala
+assert("hello world")(containsString("world"))
+```
+
+#### `startsWithString`
+
+Asserts that a string starts with a prefix.
+
+```scala
+def startsWithString(prefix: String): Assertion[String]
+```
+
+**Example:**
+```scala
+assert("hello world")(startsWithString("hello"))
+```
+
+#### `endsWithString`
+
+Asserts that a string ends with a suffix.
+
+```scala
+def endsWithString(suffix: String): Assertion[String]
+```
+
+#### `matchesRegex`
+
+Asserts that a string matches a regular expression.
+
+```scala
+def matchesRegex(regex: String): Assertion[String]
+```
+
+**Example:**
+```scala
+assert("hello123")(matchesRegex("hello\\d+"))
+```
+
+#### `isEmptyString`
+
+Asserts that a string is empty.
+
+```scala
+val isEmptyString: Assertion[String]
+```
+
+#### `isNonEmptyString`
+
+Asserts that a string is non-empty.
+
+```scala
+val isNonEmptyString: Assertion[String]
+```
+
+### Option
+
+#### `isSome`
+
+Asserts that an option is `Some` and its value satisfies an assertion.
+
+```scala
+def isSome[A](assertion: Assertion[A]): Assertion[Option[A]]
+val isSome: Assertion[Option[Any]]
+```
+
+**Example:**
+```scala
+assert(Some(5))(isSome(isGreaterThan(0)))
+```
+
+#### `isNone`
+
+Asserts that an option is `None`.
+
+```scala
+val isNone: Assertion[Option[Any]]
+```
+
+**Example:**
+```scala
+assert(None)(isNone)
+```
+
+### Either
+
+#### `isLeft`
+
+Asserts that an either is `Left` and its value satisfies an assertion.
+
+```scala
+def isLeft[A](assertion: Assertion[A]): Assertion[Either[A, Any]]
+val isLeft: Assertion[Either[Any, Any]]
+```
+
+**Example:**
+```scala
+assert(Left("error"))(isLeft(containsString("error")))
+```
+
+#### `isRight`
+
+Asserts that an either is `Right` and its value satisfies an assertion.
+
+```scala
+def isRight[A](assertion: Assertion[A]): Assertion[Either[Any, A]]
+val isRight: Assertion[Either[Any, Any]]
+```
+
+### Try
+
+#### `isSuccess`
+
+Asserts that a try is `Success` and its value satisfies an assertion.
+
+```scala
+def isSuccess[A](assertion: Assertion[A]): Assertion[Try[A]]
+val isSuccess: Assertion[Try[Any]]
+```
+
+**Example:**
+```scala
+import scala.util.Try
+assert(Try(5))(isSuccess(isGreaterThan(0)))
+```
+
+#### `isFailure`
+
+Asserts that a try is `Failure` and its throwable satisfies an assertion.
+
+```scala
+def isFailure(assertion: Assertion[Throwable]): Assertion[Try[Any]]
+val isFailure: Assertion[Try[Any]]
+```
+
+### Exit
+
+#### `succeeds`
+
+Asserts that an exit value succeeds with a value satisfying an assertion.
+
+```scala
+def succeeds[A](assertion: Assertion[A]): Assertion[Exit[Any, A]]
+```
+
+**Example:**
+```scala
+assert(Exit.succeed(5))(succeeds(isGreaterThan(0)))
+```
+
+#### `fails`
+
+Asserts that an exit value fails with an error satisfying an assertion.
+
+```scala
+def fails[E](assertion: Assertion[E]): Assertion[Exit[E, Any]]
+```
+
+#### `dies`
+
+Asserts that an exit value dies with a throwable satisfying an assertion.
+
+```scala
+def dies(assertion: Assertion[Throwable]): Assertion[Exit[Any, Any]]
+```
+
+#### `isInterrupted`
+
+Asserts that an exit value is interrupted.
+
+```scala
+val isInterrupted: Assertion[Exit[Any, Any]]
+```
+
+### Type Checking
+
+#### `isSubtype`
+
+Asserts that a value has the specified type.
+
+```scala
+def isSubtype[A](assertion: Assertion[A])(implicit C: ClassTag[A]): Assertion[Any]
+```
+
+**Example:**
+```scala
+val value: Any = "hello"
+assert(value)(isSubtype[String](anything))
+```
+
+### Case Classes
+
+#### `hasField`
+
+Asserts on a field of a case class.
+
+```scala
+def hasField[A, B](name: String, proj: A => B, assertion: Assertion[B]): Assertion[A]
+```
+
+**Example:**
+```scala
+case class User(name: String, age: Int)
+val user = User("Alice", 30)
+
+assert(user)(hasField("age", _.age, isGreaterThan(18)))
+```
+
+#### `isCase`
+
+Asserts that a sum type is a specific case.
+
+```scala
+def isCase[Sum, Proj](
+  termName: String,
+  term: Sum => Option[Proj],
+  assertion: Assertion[Proj]
+): Assertion[Sum]
+```
+
+**Example:**
+```scala
+assert(Some(5))(isCase("Some", Some.unapply, isGreaterThan(0)))
+```
+
+### Maps
+
+#### `hasKey`
+
+Asserts that a map has a key with a value satisfying an assertion.
+
+```scala
+def hasKey[K, V](key: K, assertion: Assertion[V]): Assertion[Map[K, V]]
+def hasKey[K, V](key: K): Assertion[Map[K, V]]
+```
+
+**Example:**
+```scala
+assert(Map("a" -> 1, "b" -> 2))(hasKey("a", equalTo(1)))
+```
+
+#### `hasKeys`
+
+Asserts that a map's keys satisfy an assertion.
+
+```scala
+def hasKeys[K, V](assertion: Assertion[Iterable[K]]): Assertion[Map[K, V]]
+```
+
+#### `hasValues`
+
+Asserts that a map's values satisfy an assertion.
+
+```scala
+def hasValues[K, V](assertion: Assertion[Iterable[V]]): Assertion[Map[K, V]]
+```
+
+### Throwables
+
+#### `throws`
+
+Asserts that an expression throws an exception satisfying an assertion.
+
+```scala
+def throws[A](assertion: Assertion[Throwable]): Assertion[A]
+```
+
+**Example:**
+```scala
+assert(throw new RuntimeException("error"))(throws(anything))
+```
+
+#### `hasMessage`
+
+Asserts that a throwable has a message satisfying an assertion.
+
+```scala
+def hasMessage(message: Assertion[String]): Assertion[Throwable]
+```
+
+**Example:**
+```scala
+val ex = new RuntimeException("error")
+assert(ex)(hasMessage(containsString("error")))
+```
+
+### Special
+
+#### `anything`
+
+An assertion that always succeeds.
+
+```scala
+val anything: Assertion[Any]
+```
+
+**Example:**
+```scala
+assert(42)(anything) // always passes
+```
+
+#### `nothing`
+
+An assertion that always fails.
+
+```scala
+val nothing: Assertion[Any]
+```
+
+#### `isUnit`
+
+Asserts that a value is unit.
+
+```scala
+val isUnit: Assertion[Unit]
+```
+
+#### `isNull`
+
+Asserts that a value is null.
+
+```scala
+val isNull: Assertion[Any]
+```
+
+## Custom Assertions
+
+### `assertion`
+
+Creates a custom assertion from a function.
+
+```scala
+def assertion[A](name: String)(run: (=> A) => Boolean): Assertion[A]
+```
+
+**Example:**
+```scala
+val isEven = assertion[Int]("isEven") { n => n % 2 == 0 }
+assert(4)(isEven)
+```
+
+## Common Patterns
+
+### Combining Assertions
+
+```scala
+assert(5)(
+  isGreaterThan(0) &&
+  isLessThan(10) &&
+  !equalTo(7)
+)
+```
+
+### Nested Collection Assertions
+
+```scala
+assert(List(List(1, 2), List(3, 4)))(
+  forall(hasSize(equalTo(2)))
+)
+```
+
+### Complex Case Class Assertions
+
+```scala
+case class User(name: String, age: Int, email: String)
+
+assert(User("Alice", 30, "alice@example.com"))(
+  hasField("name", _.name, startsWithString("A")) &&
+  hasField("age", _.age, isWithin(18, 100)) &&
+  hasField("email", _.email, containsString("@"))
+)
+```
+
+## See Also
+
+- [Spec](/api/test-spec) - For building test suites
+- [Gen](/api/test-gen) - For property-based testing
+- [TestAspect](/api/test-aspect) - For modifying test behavior

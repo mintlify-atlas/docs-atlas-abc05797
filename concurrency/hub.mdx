@@ -1,0 +1,491 @@
+---
+title: Hub
+description: Publish-subscribe message hub where publishers offer messages and subscribers receive them independently through their own queues.
+---
+
+A **Hub** is an asynchronous message hub that enables publish-subscribe patterns. Publishers can offer messages to the hub, and subscribers can subscribe to receive those messages. Each subscriber gets their own independent queue of messages.
+
+## Basic Concept
+
+Unlike a `Queue` where each message is consumed by exactly one consumer, a `Hub` broadcasts messages to all subscribers. Each subscriber maintains their own queue and receives all messages published to the hub.
+
+```scala
+import zio._
+
+val program = for {
+  hub  <- Hub.bounded[String](16)
+  sub1 <- hub.subscribe
+  sub2 <- hub.subscribe
+  _    <- hub.publish("Hello")
+  msg1 <- sub1.take // "Hello"
+  msg2 <- sub2.take // "Hello"
+} yield (msg1, msg2)
+```
+
+## Creating Hubs
+
+### Bounded Hub (Backpressure)
+
+```scala
+import zio._
+
+// Creates bounded hub with backpressure strategy
+val hub: UIO[Hub[String]] = Hub.bounded[String](16)
+```
+
+<Tip>
+  Use power-of-2 capacities (16, 32, 64) for best performance.
+</Tip>
+
+### Dropping Hub
+
+Drops new messages when full:
+
+```scala
+import zio._
+
+val hub: UIO[Hub[String]] = Hub.dropping[String](16)
+```
+
+### Sliding Hub
+
+Drops old messages to make room for new ones:
+
+```scala
+import zio._
+
+val hub: UIO[Hub[String]] = Hub.sliding[String](16)
+```
+
+### Unbounded Hub
+
+```scala
+import zio._
+
+val hub: UIO[Hub[String]] = Hub.unbounded[String]
+```
+
+## Publishing Messages
+
+### Single Message
+
+```scala
+val hub: Hub[String] = ???
+
+// Publish single message
+val published: UIO[Boolean] = hub.publish("Hello")
+// Returns true if published successfully
+```
+
+### Multiple Messages
+
+```scala
+val hub: Hub[String] = ???
+
+// Publish multiple messages
+val surplus: UIO[Chunk[String]] = hub.publishAll(List("A", "B", "C"))
+// Returns messages that couldn't be published
+```
+
+<Note>
+  `publish` and `publishAll` can also be called via their aliases `offer` and `offerAll` since Hub implements the Enqueue interface.
+</Note>
+
+## Subscribing
+
+### Creating Subscriptions
+
+Subscriptions are scoped and automatically cleaned up:
+
+```scala
+import zio._
+
+val hub: Hub[String] = ???
+
+val program = ZIO.scoped {
+  for {
+    subscriber <- hub.subscribe
+    message    <- subscriber.take
+    _          <- ZIO.succeed(println(message))
+  } yield ()
+  // Subscription automatically unsubscribed when scope closes
+}
+```
+
+### Multiple Subscribers
+
+```scala
+import zio._
+
+val program = for {
+  hub <- Hub.bounded[String](16)
+  
+  // Create multiple subscribers in parallel
+  subscription1 <- hub.subscribe
+  subscription2 <- hub.subscribe
+  subscription3 <- hub.subscribe
+  
+  // Publish message
+  _ <- hub.publish("Broadcast message")
+  
+  // All subscribers receive the message
+  msg1 <- subscription1.take
+  msg2 <- subscription2.take  
+  msg3 <- subscription3.take
+} yield (msg1, msg2, msg3)
+```
+
+## Subscriber Operations
+
+Each subscription provides a `Dequeue` interface:
+
+```scala
+val hub: Hub[String] = ???
+
+val program = ZIO.scoped {
+  for {
+    sub <- hub.subscribe
+    
+    // Take single message
+    msg <- sub.take
+    
+    // Take all available messages
+    all <- sub.takeAll
+    
+    // Take up to N messages
+    upTo <- sub.takeUpTo(10)
+    
+    // Check size
+    size <- sub.size
+  } yield all
+}
+```
+
+## Publish-Subscribe Pattern
+
+### Event Broadcasting
+
+```scala
+import zio._
+
+sealed trait Event
+case class UserLoggedIn(userId: String) extends Event
+case class OrderPlaced(orderId: String) extends Event
+case class PaymentProcessed(amount: BigDecimal) extends Event
+
+def eventLogger(events: Dequeue[Event]): UIO[Unit] =
+  events.take.flatMap { event =>
+    ZIO.succeed(println(s"[LOG] $event"))
+  }.forever
+
+def analyticsProcessor(events: Dequeue[Event]): UIO[Unit] =
+  events.take.flatMap { event =>
+    ZIO.succeed(println(s"[ANALYTICS] Processing $event"))
+  }.forever
+
+def notificationSender(events: Dequeue[Event]): UIO[Unit] =
+  events.take.flatMap { 
+    case UserLoggedIn(userId) => 
+      ZIO.succeed(println(s"[NOTIFY] Welcome $userId"))
+    case _ => 
+      ZIO.unit
+  }.forever
+
+val program = for {
+  hub <- Hub.bounded[Event](100)
+  
+  // Subscribe multiple processors
+  logger       <- hub.subscribe
+  analytics    <- hub.subscribe
+  notification <- hub.subscribe
+  
+  // Start processors
+  _ <- eventLogger(logger).fork
+  _ <- analyticsProcessor(analytics).fork
+  _ <- notificationSender(notification).fork
+  
+  // Publish events
+  _ <- hub.publish(UserLoggedIn("user123"))
+  _ <- hub.publish(OrderPlaced("order456"))
+  _ <- hub.publish(PaymentProcessed(99.99))
+  
+  _ <- ZIO.sleep(1.second)
+} yield ()
+```
+
+### Fan-out Pattern
+
+Distribute work to multiple workers:
+
+```scala
+import zio._
+
+case class Task(id: Int, data: String)
+
+def worker(id: Int, tasks: Dequeue[Task]): UIO[Unit] =
+  tasks.take.flatMap { task =>
+    ZIO.succeed(println(s"Worker $id: processing ${task.id}")) *>
+      ZIO.sleep(Random.nextIntBetween(100, 500).millis)
+  }.forever
+
+val program = ZIO.scoped {
+  for {
+    hub <- Hub.bounded[Task](50)
+    
+    // Create worker subscriptions
+    workers <- ZIO.foreach(1 to 5) { id =>
+                 hub.subscribe.flatMap(sub => worker(id, sub).fork)
+               }
+    
+    // Publish tasks
+    _ <- ZIO.foreach(1 to 20) { i =>
+           hub.publish(Task(i, s"data-$i"))
+         }
+    
+    _ <- ZIO.sleep(5.seconds)
+    _ <- ZIO.foreachDiscard(workers)(_.interrupt)
+  } yield ()
+}
+```
+
+## Late Subscribers
+
+Subscribers only receive messages published after they subscribe:
+
+```scala
+import zio._
+
+val program = for {
+  hub <- Hub.bounded[String](16)
+  
+  // Publish before subscription
+  _ <- hub.publish("Message 1")
+  
+  // Subscribe
+  sub <- hub.subscribe
+  
+  // Publish after subscription
+  _ <- hub.publish("Message 2")
+  
+  // Only "Message 2" is received
+  msg <- sub.take
+} yield msg // "Message 2"
+```
+
+<Warning>
+  Messages published before a subscription is created are not received by that subscriber. If you need message history, consider using a different pattern or maintaining a separate message log.
+</Warning>
+
+## Backpressure Strategies
+
+### Backpressure (Default)
+
+Publishers wait when hub is full:
+
+```scala
+import zio._
+
+val program = for {
+  hub <- Hub.bounded[Int](2)
+  sub <- hub.subscribe
+  
+  _ <- hub.publish(1) // succeeds
+  _ <- hub.publish(2) // succeeds
+  
+  // Next publish blocks until subscriber takes a message
+  fiber <- hub.publish(3).fork
+  _     <- ZIO.sleep(1.second)
+  _     <- sub.take // makes space
+  _     <- fiber.join // now succeeds
+} yield ()
+```
+
+### Dropping Strategy
+
+New messages dropped when full:
+
+```scala
+val program = for {
+  hub <- Hub.dropping[Int](2)
+  sub <- hub.subscribe
+  
+  _ <- hub.publish(1) // true
+  _ <- hub.publish(2) // true
+  _ <- hub.publish(3) // false (dropped)
+} yield ()
+```
+
+### Sliding Strategy
+
+Old messages dropped when full:
+
+```scala
+val program = for {
+  hub <- Hub.sliding[Int](2)
+  sub <- hub.subscribe
+  
+  _ <- hub.publish(1) // [1]
+  _ <- hub.publish(2) // [1, 2]
+  _ <- hub.publish(3) // [2, 3] (1 dropped)
+  
+  msg <- sub.take // 2
+} yield msg
+```
+
+## Hub Properties
+
+```scala
+val hub: Hub[String] = ???
+
+// Get capacity
+val capacity: Int = hub.capacity
+
+// Get current size
+val size: UIO[Int] = hub.size
+
+// Check if empty
+val empty: UIO[Boolean] = hub.isEmpty
+
+// Check if full  
+val full: UIO[Boolean] = hub.isFull
+```
+
+## Shutdown
+
+### Shutdown Hub
+
+```scala
+val hub: Hub[String] = ???
+
+// Shutdown hub (completes all subscribers)
+val shutdown: UIO[Unit] = hub.shutdown
+
+// Check shutdown status
+val isDown: UIO[Boolean] = hub.isShutdown
+
+// Wait for shutdown
+val awaited: UIO[Unit] = hub.awaitShutdown
+```
+
+### Shutdown Subscriptions
+
+```scala
+val sub: Dequeue[String] = ???
+
+// Shutdown individual subscription
+val shutdown: UIO[Unit] = sub.shutdown
+
+// Check if subscription is shutdown
+val isDown: UIO[Boolean] = sub.isShutdown
+```
+
+## Real-time Updates Pattern
+
+```scala
+import zio._
+import zio.stream._
+
+case class StockPrice(symbol: String, price: BigDecimal, timestamp: Long)
+
+class StockPriceHub(hub: Hub[StockPrice]) {
+  // Publish price update
+  def updatePrice(price: StockPrice): UIO[Boolean] =
+    hub.publish(price)
+  
+  // Subscribe to price stream
+  def priceStream: ZStream[Any, Nothing, StockPrice] =
+    ZStream.unwrapScoped {
+      hub.subscribe.map(ZStream.fromQueue(_))
+    }
+}
+
+val program = for {
+  hub       <- Hub.bounded[StockPrice](100)
+  stockHub  = new StockPriceHub(hub)
+  
+  // Multiple clients subscribe
+  client1   <- stockHub.priceStream
+                 .foreach(p => ZIO.succeed(println(s"Client 1: $p")))
+                 .fork
+  client2   <- stockHub.priceStream
+                 .foreach(p => ZIO.succeed(println(s"Client 2: $p")))
+                 .fork
+  
+  // Publish price updates
+  _ <- stockHub.updatePrice(StockPrice("AAPL", 150.0, System.currentTimeMillis()))
+  _ <- stockHub.updatePrice(StockPrice("GOOGL", 2800.0, System.currentTimeMillis()))
+  
+  _ <- ZIO.sleep(2.seconds)
+  _ <- client1.interrupt
+  _ <- client2.interrupt
+} yield ()
+```
+
+## Chat Room Pattern
+
+```scala
+import zio._
+
+case class ChatMessage(user: String, text: String, timestamp: Long)
+
+class ChatRoom(hub: Hub[ChatMessage]) {
+  def send(user: String, text: String): UIO[Boolean] =
+    hub.publish(ChatMessage(user, text, System.currentTimeMillis()))
+  
+  def join(username: String): ZIO[Scope, Nothing, UIO[Unit]] =
+    hub.subscribe.map { messages =>
+      messages.take.flatMap { msg =>
+        ZIO.succeed(println(s"[$username] ${msg.user}: ${msg.text}"))
+      }.forever
+    }
+}
+
+val program = ZIO.scoped {
+  for {
+    hub  <- Hub.bounded[ChatMessage](100)
+    room = new ChatRoom(hub)
+    
+    // Users join
+    alice <- room.join("Alice").flatMap(_.fork)
+    bob   <- room.join("Bob").flatMap(_.fork)
+    
+    // Send messages
+    _ <- room.send("Alice", "Hello everyone!")
+    _ <- room.send("Bob", "Hi Alice!")
+    _ <- room.send("Alice", "How are you?")
+    
+    _ <- ZIO.sleep(1.second)
+  } yield ()
+}
+```
+
+## Performance Considerations
+
+<Card title="Memory Usage" icon="memory">
+  Each subscriber maintains its own queue. Memory usage grows with the number of subscribers × capacity. Choose capacity carefully based on your subscriber count.
+</Card>
+
+<Card title="Slow Subscribers" icon="turtle">
+  With backpressure strategy, slow subscribers can slow down publishers. Consider using dropping or sliding strategies if some subscribers can tolerate message loss.
+</Card>
+
+<Card title="Subscription Management" icon="users">
+  Use scoped subscriptions to ensure proper cleanup. Unmanaged subscriptions can leak memory and resources.
+</Card>
+
+## Best Practices
+
+<Tip>
+  Use `Hub` when you need broadcast/multicast communication. Use `Queue` when you need point-to-point communication with load balancing across consumers.
+</Tip>
+
+<Warning>
+  Always manage subscriptions within a `Scope`. Subscriptions that aren't cleaned up will continue to accumulate messages, potentially causing memory leaks.
+</Warning>
+
+<Card title="Strategy Selection" icon="filter">
+  - **Bounded**: When all subscribers must receive all messages
+  - **Dropping**: When new data is less important (e.g., sensor readings)
+  - **Sliding**: When recent data is most important (e.g., real-time dashboards)
+  - **Unbounded**: When memory is abundant and message loss is unacceptable
+</Card>

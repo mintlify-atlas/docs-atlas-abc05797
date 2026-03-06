@@ -1,0 +1,146 @@
+---
+title: "ZLayer"
+description: "Dependency injection and service composition"
+---
+
+# ZLayer[RIn, E, ROut]
+
+`ZLayer` is ZIO's solution for dependency injection and service composition. It allows you to build and compose service layers in a type-safe, composable way.
+
+## Type Parameters
+
+<ParamField path="RIn" type="type">
+  The input requirements - services this layer depends on
+</ParamField>
+
+<ParamField path="E" type="type">
+  The error type that may occur during layer construction
+</ParamField>
+
+<ParamField path="ROut" type="type">
+  The output services this layer provides
+</ParamField>
+
+## Creating Layers
+
+### succeed
+
+```scala
+def succeed[A: Tag](a: => A): ULayer[A]
+```
+
+Creates a layer that provides a service from a pure value.
+
+```scala
+val configLayer: ULayer[Config] = 
+  ZLayer.succeed(Config("localhost", 8080))
+```
+
+### fromZIO
+
+```scala
+def fromZIO[R: EnvironmentTag, E, A: Tag](effect: ZIO[R, E, A]): ZLayer[R, E, A]
+```
+
+Creates a layer from an effect.
+
+```scala
+val databaseLayer: ZLayer[Config, IOException, Database] =
+  ZLayer.fromZIO {
+    for {
+      config <- ZIO.service[Config]
+      db <- Database.connect(config.dbUrl)
+    } yield db
+  }
+```
+
+### fromFunction
+
+```scala
+def fromFunction[A: Tag, B: Tag](f: A => B): URLayer[A, B]
+```
+
+Creates a layer that transforms one service into another.
+
+```scala
+val loggerLayer: URLayer[Config, Logger] =
+  ZLayer.fromFunction((config: Config) => Logger(config.logLevel))
+```
+
+## Composing Layers
+
+### Horizontal Composition (`++`)
+
+```scala
+val combined: ULayer[Config with Logger] = 
+  configLayer ++ loggerLayer
+```
+
+### Vertical Composition (`>>>`)
+
+```scala
+val stack: ZLayer[Any, IOException, Database] =
+  configLayer >>> databaseLayer
+```
+
+### provide methods
+
+```scala
+val app: ZIO[Database with Logger, IOException, Unit] = ???
+val provided: ZIO[Config, IOException, Unit] = 
+  app.provide(databaseLayer, loggerLayer)
+```
+
+## Resource Management
+
+### scoped
+
+```scala
+def scoped[R: EnvironmentTag, E, A: Tag](
+  acquire: ZIO[R with Scope, E, A]
+): ZLayer[R, E, A]
+```
+
+Creates a layer with automatic resource cleanup.
+
+```scala
+val connectionLayer: ZLayer[Config, IOException, Connection] =
+  ZLayer.scoped {
+    ZIO.acquireRelease(
+      Connection.open
+    )(conn => conn.close.orDie)
+  }
+```
+
+## Common Patterns
+
+### Service Pattern
+
+```scala
+trait UserService {
+  def getUser(id: String): IO[UserError, User]
+}
+
+object UserService {
+  val live: ZLayer[Database, Nothing, UserService] =
+    ZLayer.succeed {
+      new UserService {
+        def getUser(id: String) = ???
+      }
+    }
+}
+```
+
+### Dependency Graph
+
+```scala
+val appLayer = 
+  configLayer >>>
+  (databaseLayer ++ loggerLayer) >>>
+  (userServiceLayer ++ emailServiceLayer)
+```
+
+## See Also
+
+- [ZEnvironment](/api/zenvironment) - Service container
+- [Service Pattern](/services/service-pattern) - Service definition patterns

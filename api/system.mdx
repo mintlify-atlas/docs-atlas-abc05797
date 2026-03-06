@@ -1,0 +1,159 @@
+---
+title: "System"
+description: "System properties and environment"
+---
+
+# System Service
+
+The `System` service provides access to system properties and environment variables.
+
+## Environment Variables
+
+### env
+
+```scala
+def env(variable: => String): IO[SecurityException, Option[String]]
+```
+
+Retrieves an environment variable.
+
+```scala
+for {
+  home <- System.env("HOME")
+  _ <- Console.printLine(s"Home: ${home.getOrElse("not set")}")
+} yield ()
+```
+
+### envOrElse
+
+```scala
+def envOrElse(variable: => String, alt: => String): IO[SecurityException, String]
+```
+
+Retrieves an environment variable with a default value.
+
+```scala
+val port: IO[SecurityException, String] = 
+  System.envOrElse("PORT", "8080")
+```
+
+### envOrOption
+
+```scala
+def envOrOption(variable: => String, alt: => Option[String]): IO[SecurityException, Option[String]]
+```
+
+### envs
+
+```scala
+val envs: IO[SecurityException, Map[String, String]]
+```
+
+Retrieves all environment variables.
+
+```scala
+for {
+  allEnvs <- System.envs
+  _ <- Console.printLine(s"Found ${allEnvs.size} environment variables")
+} yield ()
+```
+
+## System Properties
+
+### property
+
+```scala
+def property(prop: => String): IO[Throwable, Option[String]]
+```
+
+Retrieves a system property.
+
+```scala
+for {
+  javaVersion <- System.property("java.version")
+  _ <- Console.printLine(s"Java: ${javaVersion.getOrElse("unknown")}")
+} yield ()
+```
+
+### propertyOrElse
+
+```scala
+def propertyOrElse(prop: => String, alt: => String): IO[Throwable, String]
+```
+
+Retrieves a system property with a default value.
+
+### properties
+
+```scala
+val properties: IO[Throwable, Map[String, String]]
+```
+
+Retrieves all system properties.
+
+## System Information
+
+### lineSeparator
+
+```scala
+val lineSeparator: UIO[String]
+```
+
+Returns the system line separator.
+
+```scala
+for {
+  sep <- System.lineSeparator
+  text = s"Line 1${sep}Line 2"
+  _ <- Console.printLine(text)
+} yield ()
+```
+
+## Usage Examples
+
+### Configuration from Environment
+
+```scala
+case class AppConfig(
+  host: String,
+  port: Int,
+  dbUrl: String
+)
+
+val loadConfig: IO[Exception, AppConfig] =
+  for {
+    host <- System.envOrElse("HOST", "localhost")
+    port <- System.envOrElse("PORT", "8080").map(_.toInt)
+    dbUrl <- System.env("DATABASE_URL")
+      .someOrFail(new Exception("DATABASE_URL not set"))
+  } yield AppConfig(host, port, dbUrl)
+```
+
+### Debug Information
+
+```scala
+val printSystemInfo: ZIO[Any, Throwable, Unit] =
+  for {
+    osName <- System.property("os.name")
+    osVersion <- System.property("os.version")
+    javaVersion <- System.property("java.version")
+    _ <- Console.printLine(s"OS: ${osName.getOrElse("unknown")} ${osVersion.getOrElse("")}")
+    _ <- Console.printLine(s"Java: ${javaVersion.getOrElse("unknown")}")
+  } yield ()
+```
+
+## Testing
+
+Use `TestSystem` to set environment variables and properties in tests.
+
+```scala
+for {
+  _ <- TestSystem.putEnv("TEST_VAR", "test-value")
+  value <- System.env("TEST_VAR")
+} yield assertTrue(value.contains("test-value"))
+```
+
+## See Also
+
+- [TestSystem](/testing/test-services) - System testing
+- [Config](/guides/ecosystem/zio-config) - Configuration management

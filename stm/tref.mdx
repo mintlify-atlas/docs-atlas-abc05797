@@ -1,0 +1,530 @@
+---
+title: TRef
+description: Transactional mutable references in ZIO STM
+---
+
+## Overview
+
+`TRef[A]` is a transactional reference that holds a mutable value of type `A`. It provides the transactional equivalent of ZIO's `Ref`, allowing you to read and modify values within STM transactions.
+
+```scala
+final class TRef[A]
+```
+
+<Info>
+While `TRef` provides transactional mutability, the values stored inside should be **immutable**. This ensures safe concurrent access.
+</Info>
+
+## Creating TRef
+
+### make
+
+Creates a `TRef` within an STM transaction:
+
+```scala
+import zio.stm._
+
+val createRef: USTM[TRef[Int]] = 
+  TRef.make(42)
+```
+
+### makeCommit
+
+Creates a `TRef` and immediately commits the transaction:
+
+```scala
+import zio._
+import zio.stm._
+
+val program: UIO[TRef[Int]] = 
+  TRef.makeCommit(42)
+```
+
+## Reading Values
+
+### get
+
+Retrieves the current value:
+
+```scala
+import zio._
+import zio.stm._
+
+val readValue: UIO[Int] = for {
+  ref <- TRef.makeCommit(42)
+  value <- ref.get.commit
+} yield value
+// Result: 42
+```
+
+### Reading in Transactions
+
+```scala
+val transaction: UIO[Int] = for {
+  ref <- TRef.makeCommit(10)
+  result <- STM.atomically {
+    for {
+      a <- ref.get
+      b <- ref.get
+    } yield a + b
+  }
+} yield result
+// Result: 20
+```
+
+## Writing Values
+
+### set
+
+Sets the value of the reference:
+
+```scala
+import zio._
+import zio.stm._
+
+val setValue: UIO[Unit] = for {
+  ref <- TRef.makeCommit(0)
+  _ <- ref.set(42).commit
+} yield ()
+```
+
+### getAndSet
+
+Sets a new value and returns the old one:
+
+```scala
+val swapValue: UIO[Int] = for {
+  ref <- TRef.makeCommit(10)
+  oldValue <- ref.getAndSet(20).commit
+} yield oldValue
+// Result: 10
+```
+
+## Updating Values
+
+### update
+
+Updates the value using a function:
+
+```scala
+import zio._
+import zio.stm._
+
+val increment: UIO[Unit] = for {
+  ref <- TRef.makeCommit(0)
+  _ <- ref.update(_ + 1).commit
+} yield ()
+```
+
+### updateAndGet
+
+Updates and returns the new value:
+
+```scala
+val incrementAndGet: UIO[Int] = for {
+  ref <- TRef.makeCommit(41)
+  newValue <- ref.updateAndGet(_ + 1).commit
+} yield newValue
+// Result: 42
+```
+
+### getAndUpdate
+
+Updates and returns the old value:
+
+```scala
+val getAndIncrement: UIO[Int] = for {
+  ref <- TRef.makeCommit(41)
+  oldValue <- ref.getAndUpdate(_ + 1).commit
+} yield oldValue
+// Result: 41
+```
+
+### updateSome
+
+Updates only if the partial function is defined:
+
+```scala
+val conditionalUpdate: UIO[Unit] = for {
+  ref <- TRef.makeCommit(5)
+  _ <- ref.updateSome {
+    case n if n > 0 => n * 2
+  }.commit
+} yield ()
+// Result: ref contains 10
+```
+
+### updateSomeAndGet
+
+```scala
+val conditionalUpdateAndGet: UIO[Int] = for {
+  ref <- TRef.makeCommit(5)
+  newValue <- ref.updateSomeAndGet {
+    case n if n > 0 => n * 2
+  }.commit
+} yield newValue
+// Result: 10
+```
+
+### getAndUpdateSome
+
+```scala
+val getAndConditionalUpdate: UIO[Int] = for {
+  ref <- TRef.makeCommit(5)
+  oldValue <- ref.getAndUpdateSome {
+    case n if n > 0 => n * 2
+  }.commit
+} yield oldValue
+// Result: 5
+```
+
+## Modify
+
+### modify
+
+Atomically modifies the reference and returns a computed value:
+
+```scala
+import zio._
+import zio.stm._
+
+val modifyRef: UIO[String] = for {
+  ref <- TRef.makeCommit(10)
+  result <- ref.modify { value =>
+    val newValue = value * 2
+    (s"Old: $value, New: $newValue", newValue)
+  }.commit
+} yield result
+// Result: "Old: 10, New: 20"
+```
+
+### modifySome
+
+Conditionally modifies with a default result:
+
+```scala
+val modifyIfPositive: UIO[String] = for {
+  ref <- TRef.makeCommit(5)
+  result <- ref.modifySome("unchanged") {
+    case n if n > 0 => (s"doubled to ${n * 2}", n * 2)
+  }.commit
+} yield result
+// Result: "doubled to 10"
+```
+
+## Practical Examples
+
+### Counter
+
+```scala
+import zio._
+import zio.stm._
+
+class Counter(private val ref: TRef[Int]) {
+  def increment: UIO[Unit] = 
+    ref.update(_ + 1).commit
+  
+  def decrement: UIO[Unit] = 
+    ref.update(_ - 1).commit
+  
+  def get: UIO[Int] = 
+    ref.get.commit
+  
+  def reset: UIO[Unit] = 
+    ref.set(0).commit
+}
+
+object Counter {
+  def make: UIO[Counter] = 
+    TRef.makeCommit(0).map(new Counter(_))
+}
+
+// Usage
+val program: UIO[Int] = for {
+  counter <- Counter.make
+  _ <- counter.increment
+  _ <- counter.increment
+  value <- counter.get
+} yield value
+// Result: 2
+```
+
+### Bank Account
+
+```scala
+import zio._
+import zio.stm._
+
+class BankAccount(private val balance: TRef[BigDecimal]) {
+  
+  def deposit(amount: BigDecimal): UIO[BigDecimal] = 
+    balance.updateAndGet(_ + amount).commit
+  
+  def withdraw(amount: BigDecimal): IO[String, BigDecimal] = 
+    STM.atomically {
+      for {
+        current <- balance.get
+        _ <- if (current >= amount) STM.unit
+             else STM.fail("Insufficient funds")
+        _ <- balance.update(_ - amount)
+        newBalance <- balance.get
+      } yield newBalance
+    }
+  
+  def getBalance: UIO[BigDecimal] = 
+    balance.get.commit
+}
+
+object BankAccount {
+  def make(initial: BigDecimal): UIO[BankAccount] = 
+    TRef.makeCommit(initial).map(new BankAccount(_))
+}
+```
+
+### Money Transfer
+
+```scala
+import zio._
+import zio.stm._
+
+def transfer(
+  from: TRef[Int],
+  to: TRef[Int],
+  amount: Int
+): IO[String, Unit] = 
+  STM.atomically {
+    for {
+      fromBalance <- from.get
+      _ <- if (fromBalance >= amount) STM.unit
+           else STM.fail(s"Insufficient funds: $fromBalance < $amount")
+      _ <- from.update(_ - amount)
+      _ <- to.update(_ + amount)
+    } yield ()
+  }
+
+// Usage
+val transferMoney: IO[String, (Int, Int)] = for {
+  alice <- TRef.makeCommit(1000)
+  bob <- TRef.makeCommit(500)
+  _ <- transfer(alice, bob, 300)
+  aliceBalance <- alice.get.commit
+  bobBalance <- bob.get.commit
+} yield (aliceBalance, bobBalance)
+// Result: (700, 800)
+```
+
+### Semaphore
+
+```scala
+import zio._
+import zio.stm._
+
+class Semaphore(private val permits: TRef[Int]) {
+  
+  def acquire: UIO[Unit] = 
+    STM.atomically {
+      for {
+        available <- permits.get
+        _ <- STM.check(available > 0)
+        _ <- permits.update(_ - 1)
+      } yield ()
+    }
+  
+  def release: UIO[Unit] = 
+    permits.update(_ + 1).commit
+  
+  def withPermit[R, E, A](effect: ZIO[R, E, A]): ZIO[R, E, A] = 
+    ZIO.acquireReleaseWith(acquire)(_ => release)(_ => effect)
+}
+
+object Semaphore {
+  def make(permits: Int): UIO[Semaphore] = 
+    TRef.makeCommit(permits).map(new Semaphore(_))
+}
+
+// Usage
+val program: UIO[String] = for {
+  semaphore <- Semaphore.make(2)
+  result <- semaphore.withPermit {
+    ZIO.succeed("Critical section")
+  }
+} yield result
+```
+
+### Shared State with Validation
+
+```scala
+import zio._
+import zio.stm._
+
+case class User(name: String, age: Int)
+
+class UserRegistry(private val users: TRef[Map[String, User]]) {
+  
+  def register(user: User): IO[String, Unit] = 
+    STM.atomically {
+      for {
+        current <- users.get
+        _ <- if (current.contains(user.name)) 
+               STM.fail(s"User ${user.name} already exists")
+             else STM.unit
+        _ <- users.update(_ + (user.name -> user))
+      } yield ()
+    }
+  
+  def update(name: String, age: Int): IO[String, Unit] = 
+    STM.atomically {
+      for {
+        current <- users.get
+        user <- current.get(name) match {
+          case Some(u) => STM.succeed(u)
+          case None => STM.fail(s"User $name not found")
+        }
+        _ <- users.update(_ + (name -> user.copy(age = age)))
+      } yield ()
+    }
+  
+  def get(name: String): UIO[Option[User]] = 
+    users.get.map(_.get(name)).commit
+}
+
+object UserRegistry {
+  def make: UIO[UserRegistry] = 
+    TRef.makeCommit(Map.empty[String, User])
+      .map(new UserRegistry(_))
+}
+```
+
+## Composing Multiple TRefs
+
+### Atomic Swap
+
+```scala
+import zio._
+import zio.stm._
+
+def swap(ref1: TRef[Int], ref2: TRef[Int]): UIO[Unit] = 
+  STM.atomically {
+    for {
+      value1 <- ref1.get
+      value2 <- ref2.get
+      _ <- ref1.set(value2)
+      _ <- ref2.set(value1)
+    } yield ()
+  }
+
+val program: UIO[(Int, Int)] = for {
+  ref1 <- TRef.makeCommit(10)
+  ref2 <- TRef.makeCommit(20)
+  _ <- swap(ref1, ref2)
+  a <- ref1.get.commit
+  b <- ref2.get.commit
+} yield (a, b)
+// Result: (20, 10)
+```
+
+### Multi-Variable Invariant
+
+```scala
+import zio._
+import zio.stm._
+
+// Maintain invariant: x + y = 100
+class LinkedValues(
+  val x: TRef[Int],
+  val y: TRef[Int]
+) {
+  
+  def updateX(newX: Int): IO[String, Unit] = 
+    STM.atomically {
+      for {
+        _ <- x.set(newX)
+        _ <- y.set(100 - newX)
+        // Verify invariant
+        finalX <- x.get
+        finalY <- y.get
+        _ <- if (finalX + finalY == 100) STM.unit
+             else STM.fail("Invariant violated")
+      } yield ()
+    }
+}
+
+object LinkedValues {
+  def make(initialX: Int): UIO[LinkedValues] = 
+    for {
+      x <- TRef.makeCommit(initialX)
+      y <- TRef.makeCommit(100 - initialX)
+    } yield new LinkedValues(x, y)
+}
+```
+
+## Performance Considerations
+
+<Tip>
+**Use Immutable Values**
+
+`TRef` uses compare-and-swap operations internally. Always use immutable values to ensure correctness.
+</Tip>
+
+### Good
+
+```scala
+import zio._
+import zio.stm._
+
+case class ImmutableCounter(value: Int)
+
+val good: UIO[Unit] = for {
+  ref <- TRef.makeCommit(ImmutableCounter(0))
+  _ <- ref.update(c => c.copy(value = c.value + 1)).commit
+} yield ()
+```
+
+### Bad
+
+```scala
+// DON'T DO THIS
+class MutableCounter(var value: Int)
+
+val bad: UIO[Unit] = for {
+  ref <- TRef.makeCommit(new MutableCounter(0))
+  // UNSAFE: modifying mutable state
+  _ <- ref.update { c => c.value += 1; c }.commit
+} yield ()
+```
+
+<Warning>
+**Avoid Hot Spots**
+
+Multiple transactions accessing the same `TRef` can create contention. Consider using multiple refs or other data structures when possible.
+</Warning>
+
+## Comparison with Ref
+
+| Feature | TRef | Ref |
+|---------|------|-----|
+| **Atomicity** | Multi-variable | Single-variable |
+| **Composability** | High (STM) | Limited |
+| **Retry Logic** | Built-in | Manual |
+| **Performance** | Overhead for coordination | Lower overhead |
+| **Use Case** | Coordinated updates | Independent updates |
+
+### When to use TRef
+
+- Coordinating multiple variables
+- Need automatic retry on conflicts
+- Building composable concurrent abstractions
+- Complex synchronization requirements
+
+### When to use Ref
+
+- Single variable updates
+- Performance-critical single-ref operations
+- No need for multi-variable coordination
+
+## See Also
+
+- [ZSTM](/stm/zstm) - The core STM effect type
+- [TArray](/stm/tarray) - Transactional arrays
+- [TMap](/stm/tmap) - Transactional maps
+- [STM Overview](/stm/overview) - STM concepts and patterns

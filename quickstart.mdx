@@ -1,80 +1,345 @@
 ---
-title: "Quickstart"
-description: "Start building awesome documentation in minutes"
+title: "Quickstart Guide"
+description: "Build your first ZIO application in minutes with this step-by-step guide"
 ---
 
-## Get started in three steps
+# Quickstart Guide
 
-Get your documentation site running locally and make your first customization.
+This guide will walk you through creating your first ZIO application from scratch. You'll learn how to set up a project, write a simple ZIO program, and run it.
 
-### Step 1: Set up your local environment
+## Prerequisites
 
-<AccordionGroup>
-  <Accordion icon="copy" title="Clone your docs locally">
-    During the onboarding process, you created a GitHub repository with your docs content if you didn't already have one. You can find a link to this repository in your [dashboard](https://dashboard.mintlify.com).
-    
-    To clone the repository locally so that you can make and preview changes to your docs, follow the [Cloning a repository](https://docs.github.com/en/repositories/creating-and-managing-repositories/cloning-a-repository) guide in the GitHub docs.
-  </Accordion>
-  <Accordion icon="rectangle-terminal" title="Start the preview server">
-    1. Install the Mintlify CLI: `npm i -g mint`
-    2. Navigate to your docs directory and run: `mint dev`
-    3. Open `http://localhost:3000` to see your docs live!
-    
-    <Tip>Your preview updates automatically as you edit files.</Tip>
-  </Accordion>
-</AccordionGroup>
+Before you begin, make sure you have:
 
-### Step 2: Deploy your changes
+- **Java JDK 8 or higher** installed
+- **sbt** (Scala Build Tool) installed - [Download sbt](https://www.scala-sbt.org/download.html)
+- A text editor or IDE (we recommend IntelliJ IDEA with the Scala plugin)
 
-<AccordionGroup>
-  <Accordion icon="github" title="Install our GitHub app">
-    Install the Mintlify GitHub app from your [dashboard](https://dashboard.mintlify.com/settings/organization/github-app).
-    
-    Our GitHub app automatically deploys your changes to your docs site, so you don't need to manage deployments yourself.
-</Accordion>
-<Accordion icon="palette" title="Update your site name and colors">
-    For a first change, let's update the name and colors of your docs site.
+## Create Your First ZIO Application
 
-    1. Open `docs.json` in your editor.
-    2. Change the `"name"` field to your project name.
-    3. Update the `"colors"` to match your brand.
-    4. Save and see your changes instantly at `http://localhost:3000`.
+Let's build a simple console application that greets users by name.
 
-    <Tip>Try changing the primary color to see an immediate difference!</Tip>
-  </Accordion>
-</AccordionGroup>
+<Steps>
 
-### Step 3: Go live
+### Create a new sbt project
 
-<Accordion icon="rocket" title="Publish your docs">
-  1. Commit and push your changes.
-  2. Your docs will update and be live in moments!
-</Accordion>
+Create a new directory and initialize an sbt project:
 
-## Next steps
+```bash
+mkdir hello-zio
+cd hello-zio
+```
 
-Now that you have your docs running, explore these key features:
+Create a file `build.sbt` with the following content:
 
-<CardGroup cols={2}>
+```scala build.sbt
+val zioVersion = "2.1.0"
 
-<Card title="Write Content" icon="pen-to-square" href="/essentials/markdown">
-  Learn MDX syntax and start writing your documentation.
-</Card>
+scalaVersion := "3.3.7"
 
-<Card title="Customize style" icon="palette" href="/essentials/settings">
-  Make your docs match your brand perfectly.
-</Card>
+libraryDependencies += "dev.zio" %% "zio" % zioVersion
+```
 
-<Card title="Add code examples" icon="square-code" href="/essentials/code">
-  Include syntax-highlighted code blocks.
-</Card>
+<Tip>
+  You can also use Scala 2.13 or 2.12. Just change the `scalaVersion` to `"2.13.18"` or `"2.12.21"`.
+</Tip>
 
-<Card title="API documentation" icon="code" href="/api-reference/introduction">
-  Auto-generate API docs from OpenAPI specs.
-</Card>
+### Create the source directory structure
 
-</CardGroup>
+Create the necessary directories:
+
+```bash
+mkdir -p src/main/scala
+```
+
+### Write your first ZIO program
+
+Create a file `src/main/scala/HelloZIO.scala` with this code:
+
+```scala src/main/scala/HelloZIO.scala
+import zio._
+
+object HelloZIO extends ZIOAppDefault {
+  
+  def run = 
+    for {
+      _    <- Console.printLine("Hello! What is your name?")
+      name <- Console.readLine
+      _    <- Console.printLine(s"Hello, $name! Welcome to ZIO.")
+    } yield ()
+}
+```
+
+Let's break down what's happening here:
+
+- **`extends ZIOAppDefault`** - This makes your object a runnable ZIO application
+- **`def run`** - The entry point of your ZIO application
+- **`for { ... } yield ()`** - A for-comprehension that sequences ZIO effects
+- **`Console.printLine`** - Prints a line to the console (returns `ZIO[Any, IOException, Unit]`)
+- **`Console.readLine`** - Reads a line from the console (returns `ZIO[Any, IOException, String]`)
+
+### Run your application
+
+Run the application using sbt:
+
+```bash
+sbt run
+```
+
+You should see:
+
+```
+Hello! What is your name?
+```
+
+Type your name and press Enter. You'll see:
+
+```
+Hello, [Your Name]! Welcome to ZIO.
+```
+
+</Steps>
 
 <Note>
-  **Need help?** See our [full documentation](https://mintlify.com/docs) or join our [community](https://mintlify.com/community).
+  Congratulations! You've just written and run your first ZIO application.
 </Note>
+
+## Understanding the Code
+
+Let's understand the key concepts in our Hello World program:
+
+### The ZIO Effect Type
+
+Every operation in our program returns a `ZIO` effect:
+
+```scala
+ZIO[R, E, A]
+```
+
+Where:
+- **`R`** = Environment type (what the effect needs to run)
+- **`E`** = Error type (what errors can occur)  
+- **`A`** = Success type (what value is produced)
+
+For example:
+```scala
+Console.printLine("Hello"): ZIO[Any, IOException, Unit]
+```
+
+This effect:
+- Requires no environment (`Any`)
+- Can fail with `IOException`
+- Produces `Unit` (nothing) on success
+
+### Composing Effects with For-Comprehensions
+
+The `for { ... } yield` syntax allows you to compose multiple effects sequentially:
+
+```scala
+for {
+  a <- effect1  // Run effect1, bind result to 'a'
+  b <- effect2  // Run effect2, bind result to 'b'  
+  c <- effect3  // Run effect3, bind result to 'c'
+} yield result  // Return final result
+```
+
+Each step runs after the previous one completes successfully.
+
+## A More Advanced Example
+
+Let's build a simple number guessing game:
+
+```scala src/main/scala/GuessingGame.scala
+import zio._
+import scala.util.Random
+
+object GuessingGame extends ZIOAppDefault {
+  
+  def analyzeGuess(secret: Int, guess: Int): UIO[String] =
+    if (guess < secret) ZIO.succeed("Too low!")
+    else if (guess > secret) ZIO.succeed("Too high!")
+    else ZIO.succeed("Correct!")
+  
+  def gameLoop(secret: Int, attempts: Int): ZIO[Any, IOException, Unit] =
+    for {
+      _     <- Console.printLine(s"Attempt #$attempts - Guess a number between 1 and 100:")
+      input <- Console.readLine
+      guess <- ZIO.attempt(input.toInt).catchAll(_ => 
+                 Console.printLine("Please enter a valid number") *> gameLoop(secret, attempts)
+               )
+      hint  <- analyzeGuess(secret, guess)
+      _     <- Console.printLine(hint)
+      _     <- if (guess == secret) 
+                 Console.printLine(s"You won in $attempts attempts!")
+               else 
+                 gameLoop(secret, attempts + 1)
+    } yield ()
+  
+  def run = 
+    for {
+      _      <- Console.printLine("Welcome to the Number Guessing Game!")
+      secret <- ZIO.succeed(Random.nextInt(100) + 1)
+      _      <- gameLoop(secret, 1)
+    } yield ()
+}
+```
+
+This example demonstrates:
+
+- **Error handling** with `catchAll`
+- **Recursion** for game loops
+- **Conditional logic** within ZIO effects
+- **Pure values** with `ZIO.succeed`
+- **Effect sequencing** with `*>` operator
+
+## Working with Errors
+
+ZIO makes error handling explicit and type-safe:
+
+```scala
+import zio._
+import java.io.IOException
+
+object ErrorHandlingExample extends ZIOAppDefault {
+  
+  // An effect that might fail
+  val riskyOperation: ZIO[Any, IOException, String] =
+    ZIO.attempt(scala.io.Source.fromFile("data.txt").mkString)
+      .refineToOrDie[IOException]
+  
+  // Handle the error
+  val safeOperation: ZIO[Any, Nothing, String] =
+    riskyOperation.catchAll { error =>
+      Console.printLine(s"Error reading file: ${error.getMessage}").orDie *>
+      ZIO.succeed("default data")
+    }
+  
+  def run = safeOperation.flatMap(data => Console.printLine(s"Data: $data"))
+}
+```
+
+## Concurrent Operations
+
+ZIO makes it easy to run effects in parallel:
+
+```scala
+import zio._
+
+object ConcurrentExample extends ZIOAppDefault {
+  
+  def fetchUser(id: Int): UIO[String] = 
+    ZIO.succeed(s"User-$id").delay(1.second)
+  
+  def fetchPosts(userId: String): UIO[List[String]] =
+    ZIO.succeed(List(s"Post 1 by $userId", s"Post 2 by $userId")).delay(1.second)
+  
+  def run = 
+    for {
+      // Run three user fetches in parallel
+      users <- ZIO.collectAllPar(List(
+                 fetchUser(1),
+                 fetchUser(2),
+                 fetchUser(3)
+               ))
+      _     <- Console.printLine(s"Fetched users: ${users.mkString(", ")}")
+      
+      // Fetch posts for all users in parallel  
+      posts <- ZIO.foreachPar(users)(fetchPosts)
+      _     <- Console.printLine(s"Fetched ${posts.flatten.size} posts")
+    } yield ()
+}
+```
+
+This example runs in about 2 seconds instead of 6, thanks to parallel execution.
+
+## Next Steps
+
+Now that you've built your first ZIO application, explore these topics:
+
+<CardGroup cols={2}>
+  <Card title="ZIO Effect" icon="book-open" href="/essentials/zio-effect">
+    Learn the fundamentals of ZIO effects in depth
+  </Card>
+  <Card title="Error Handling" icon="triangle-exclamation" href="/essentials/error-handling">
+    Master ZIO's powerful error handling capabilities
+  </Card>
+  <Card title="Concurrency" icon="arrows-split-up-and-left" href="/concurrency/fibers">
+    Build concurrent applications with fibers
+  </Card>
+  <Card title="Dependency Injection" icon="layer-group" href="/essentials/zlayer">
+    Manage dependencies with ZLayer
+  </Card>
+</CardGroup>
+
+## Common Patterns
+
+Here are some common operations you'll use frequently:
+
+### Creating Effects
+
+```scala
+// Pure value
+ZIO.succeed(42)
+
+// Lazy evaluation
+ZIO.attempt(println("Hello"))
+
+// From Future
+ZIO.fromFuture { implicit ec => Future.successful(42) }
+
+// Async callback
+ZIO.async[Any, Throwable, String] { callback =>
+  asyncOperation { result =>
+    callback(ZIO.succeed(result))
+  }
+}
+```
+
+### Transforming Effects
+
+```scala
+val effect: ZIO[Any, Nothing, Int] = ZIO.succeed(21)
+
+// Map the success value
+effect.map(_ * 2)  // ZIO[Any, Nothing, Int] = 42
+
+// FlatMap to chain effects
+effect.flatMap(n => ZIO.succeed(n * 2))
+
+// Map errors
+effect.mapError(_.getMessage)
+
+// Transform both success and failure
+effect.fold(
+  error => "Error occurred",
+  value => s"Success: $value"
+)
+```
+
+### Running Effects
+
+```scala
+import zio._
+
+// In ZIOAppDefault, just define 'run'
+object MyApp extends ZIOAppDefault {
+  def run = Console.printLine("Hello!")
+}
+
+// Or create a custom runtime
+val runtime = Runtime.default
+val result = Unsafe.unsafe { implicit unsafe =>
+  runtime.unsafe.run(ZIO.succeed(42))
+}
+```
+
+<Warning>
+  Only call `unsafe.run` at the edges of your application. Keep your business logic purely functional.
+</Warning>
+
+## Resources
+
+- [ZIO GitHub Repository](https://github.com/zio/zio)
+- [ZIO Discord Community](https://discord.gg/2ccFBr4)
+- [ZIO Official Website](https://zio.dev)
+- [API Documentation](https://javadoc.io/doc/dev.zio/zio_3/latest/zio/index.html)

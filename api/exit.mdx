@@ -1,0 +1,563 @@
+---
+title: "Exit"
+description: "The result of executing a ZIO effect"
+---
+
+## Overview
+
+An `Exit[E, A]` describes the result of executing a ZIO effect. The result is either succeeded with a value `A`, or failed with a `Cause[E]`.
+
+`Exit` is also a ZIO effect itself, representing a computation that has already completed.
+
+## Type Definition
+
+```scala
+sealed trait Exit[+E, +A] extends ZIO[Any, E, A]
+```
+
+## Type Parameters
+
+<ParamField path="E" type="type">
+  The error type of the exit value
+</ParamField>
+
+<ParamField path="A" type="type">
+  The success type of the exit value
+</ParamField>
+
+## Constructors
+
+### Exit.Success
+
+```scala
+final case class Success[+A](value: A) extends Exit[Nothing, A]
+```
+
+Represents successful completion with a value.
+
+<ParamField path="value" type="A">
+  The success value
+</ParamField>
+
+**Example:**
+```scala
+val exit: Exit[Nothing, Int] = Exit.Success(42)
+```
+
+### Exit.Failure
+
+```scala
+final case class Failure[+E](cause: Cause[E]) extends Exit[E, Nothing]
+```
+
+Represents failed completion with a cause.
+
+<ParamField path="cause" type="Cause[E]">
+  The cause of failure
+</ParamField>
+
+**Example:**
+```scala
+val exit: Exit[String, Nothing] = Exit.Failure(Cause.fail("error"))
+```
+
+## Factory Methods
+
+### succeed
+
+```scala
+def succeed[A](a: A): Exit[Nothing, A]
+```
+
+Creates an `Exit` that succeeds with the specified value.
+
+<ParamField path="a" type="A">
+  The success value
+</ParamField>
+
+**Example:**
+```scala
+val exit = Exit.succeed(42)
+```
+
+### fail
+
+```scala
+def fail[E](e: E): Exit[E, Nothing]
+```
+
+Creates an `Exit` that fails with the specified error.
+
+<ParamField path="e" type="E">
+  The error value
+</ParamField>
+
+**Example:**
+```scala
+val exit = Exit.fail("Something went wrong")
+```
+
+### failCause
+
+```scala
+def failCause[E](cause: Cause[E]): Exit[E, Nothing]
+```
+
+Creates an `Exit` that fails with the specified cause.
+
+<ParamField path="cause" type="Cause[E]">
+  The cause of failure
+</ParamField>
+
+**Example:**
+```scala
+val exit = Exit.failCause(Cause.fail("error") ++ Cause.die(new Exception))
+```
+
+### die
+
+```scala
+def die(t: Throwable): Exit[Nothing, Nothing]
+```
+
+Creates an `Exit` that represents a defect (unexpected error).
+
+<ParamField path="t" type="Throwable">
+  The throwable that caused the defect
+</ParamField>
+
+**Example:**
+```scala
+val exit = Exit.die(new RuntimeException("Unexpected error"))
+```
+
+### interrupt
+
+```scala
+def interrupt(fiberId: FiberId): Exit[Nothing, Nothing]
+```
+
+Creates an `Exit` that represents an interruption.
+
+<ParamField path="fiberId" type="FiberId">
+  The ID of the fiber that caused the interruption
+</ParamField>
+
+**Example:**
+```scala
+val exit = Exit.interrupt(FiberId.None)
+```
+
+## Pattern Matching
+
+The most common way to work with `Exit` values is through pattern matching:
+
+```scala
+exit match {
+  case Exit.Success(value) => println(s"Success: $value")
+  case Exit.Failure(cause) => println(s"Failure: $cause")
+}
+```
+
+## Query Methods
+
+### isSuccess
+
+```scala
+def isSuccess: Boolean
+```
+
+Determines if the result is a success.
+
+<ResponseField name="return" type="Boolean">
+  `true` if the exit is a success, `false` otherwise
+</ResponseField>
+
+### isFailure
+
+```scala
+def isFailure: Boolean
+```
+
+Determines if the result is a failure.
+
+<ResponseField name="return" type="Boolean">
+  `true` if the exit is a failure, `false` otherwise
+</ResponseField>
+
+### isInterrupted
+
+```scala
+def isInterrupted: Boolean
+```
+
+Determines if the result is interrupted.
+
+<ResponseField name="return" type="Boolean">
+  `true` if the exit represents an interruption, `false` otherwise
+</ResponseField>
+
+### causeOption
+
+```scala
+def causeOption: Option[Cause[E]]
+```
+
+Returns an option of the cause of failure.
+
+<ResponseField name="return" type="Option[Cause[E]]">
+  `Some(cause)` if the exit is a failure, `None` otherwise
+</ResponseField>
+
+**Example:**
+```scala
+exit.causeOption match {
+  case Some(cause) => println(s"Failed with: $cause")
+  case None        => println("Succeeded")
+}
+```
+
+## Transformation Methods
+
+### map
+
+```scala
+def map[B](f: A => B): Exit[E, B]
+```
+
+Maps over the success value.
+
+<ParamField path="f" type="A => B">
+  The transformation function
+</ParamField>
+
+**Example:**
+```scala
+val doubled = Exit.succeed(21).map(_ * 2) // Exit.succeed(42)
+```
+
+### mapExit
+
+```scala
+def mapExit[A1](f: A => A1): Exit[E, A1]
+```
+
+Maps over the value type.
+
+<ParamField path="f" type="A => A1">
+  The transformation function
+</ParamField>
+
+### mapError
+
+```scala
+def mapError[E1](f: E => E1): Exit[E1, A]
+```
+
+Maps over the error type.
+
+<ParamField path="f" type="E => E1">
+  The transformation function for errors
+</ParamField>
+
+**Example:**
+```scala
+val exit = Exit.fail(404).mapError(code => s"HTTP Error: $code")
+```
+
+### mapErrorExit
+
+```scala
+def mapErrorExit[E1](f: E => E1): Exit[E1, A]
+```
+
+Maps over the error type.
+
+### mapErrorCauseExit
+
+```scala
+def mapErrorCauseExit[E1](f: Cause[E] => Cause[E1]): Exit[E1, A]
+```
+
+Maps over the cause type.
+
+<ParamField path="f" type="Cause[E] => Cause[E1]">
+  The transformation function for causes
+</ParamField>
+
+### mapBothExit
+
+```scala
+def mapBothExit[E1, A1](f: E => E1, g: A => A1): Exit[E1, A1]
+```
+
+Maps over both the error and value type.
+
+<ParamField path="f" type="E => E1">
+  The transformation function for errors
+</ParamField>
+
+<ParamField path="g" type="A => A1">
+  The transformation function for values
+</ParamField>
+
+### flatMap
+
+```scala
+def flatMap[R1, E1 >: E, B](k: A => ZIO[R1, E1, B]): ZIO[R1, E1, B]
+```
+
+Sequences another effect after this exit.
+
+### flatMapExit
+
+```scala
+def flatMapExit[E1 >: E, A1](f: A => Exit[E1, A1]): Exit[E1, A1]
+```
+
+Flat maps over the value type.
+
+<ParamField path="f" type="A => Exit[E1, A1]">
+  The function producing a new exit
+</ParamField>
+
+## Folding Methods
+
+### foldExit
+
+```scala
+def foldExit[Z](failed: Cause[E] => Z, completed: A => Z): Z
+```
+
+Folds over the value or cause.
+
+<ParamField path="failed" type="Cause[E] => Z">
+  Function to handle failure
+</ParamField>
+
+<ParamField path="completed" type="A => Z">
+  Function to handle success
+</ParamField>
+
+**Example:**
+```scala
+val message = exit.foldExit(
+  cause => s"Failed: $cause",
+  value => s"Success: $value"
+)
+```
+
+### foldExitZIO
+
+```scala
+def foldExitZIO[R, E1, B](
+  failed: Cause[E] => ZIO[R, E1, B],
+  completed: A => ZIO[R, E1, B]
+): ZIO[R, E1, B]
+```
+
+Folds over the exit value with effects.
+
+<ParamField path="failed" type="Cause[E] => ZIO[R, E1, B]">
+  Effectful function to handle failure
+</ParamField>
+
+<ParamField path="completed" type="A => ZIO[R, E1, B]">
+  Effectful function to handle success
+</ParamField>
+
+## Combining Exits
+
+### `<*>` Operator
+
+```scala
+def <*>[E1 >: E, B](that: Exit[E1, B]): Exit[E1, (A, B)]
+```
+
+Sequentially zips this result with the specified result or else returns the failed `Cause[E1]`.
+
+**Example:**
+```scala
+val combined = Exit.succeed(1) <*> Exit.succeed(2) // Exit.succeed((1, 2))
+```
+
+### `<&>` Operator
+
+```scala
+def <&>[E1 >: E, B](that: Exit[E1, B]): Exit[E1, (A, B)]
+```
+
+Parallelly zips this result with the specified result or else returns the failed `Cause[E1]`.
+
+### zipWith
+
+```scala
+def zipWith[E1 >: E, B, C](
+  that: Exit[E1, B]
+)(f: (A, B) => C, g: (Cause[E], Cause[E1]) => Cause[E1]): Exit[E1, C]
+```
+
+Zips this exit with another, combining both the success values and causes.
+
+<ParamField path="that" type="Exit[E1, B]">
+  The other exit to zip with
+</ParamField>
+
+<ParamField path="f" type="(A, B) => C">
+  Function to combine success values
+</ParamField>
+
+<ParamField path="g" type="(Cause[E], Cause[E1]) => Cause[E1]">
+  Function to combine causes
+</ParamField>
+
+## Extraction Methods
+
+### getOrElse
+
+```scala
+def getOrElse[A1 >: A](orElse: Cause[E] => A1): A1
+```
+
+Retrieves the `A` if succeeded, or else returns the result of applying the function to the cause.
+
+<ParamField path="orElse" type="Cause[E] => A1">
+  Function to produce a default value from the cause
+</ParamField>
+
+**Example:**
+```scala
+val value = exit.getOrElse(cause => -1)
+```
+
+### toEither
+
+```scala
+def toEither: Either[Throwable, A]
+```
+
+Converts the `Exit` to an `Either[Throwable, A]`, by wrapping the cause in `FiberFailure` (if the result is failed).
+
+<ResponseField name="return" type="Either[Throwable, A]">
+  Either a throwable representing the failure, or the success value
+</ResponseField>
+
+**Example:**
+```scala
+exit.toEither match {
+  case Right(value) => println(s"Success: $value")
+  case Left(error)  => println(s"Error: $error")
+}
+```
+
+### toTry
+
+```scala
+def toTry(implicit ev: E <:< Throwable): scala.util.Try[A]
+```
+
+Converts the exit to a Scala `Try`.
+
+<ResponseField name="return" type="scala.util.Try[A]">
+  A `Try` representing the exit result
+</ResponseField>
+
+## Collection Operations
+
+### collectAll
+
+```scala
+def collectAll[E, A](exits: Iterable[Exit[E, A]]): Option[Exit[E, List[A]]]
+```
+
+Collects all exits into a single exit, succeeding only if all exits succeed.
+
+<ParamField path="exits" type="Iterable[Exit[E, A]]">
+  The collection of exits to combine
+</ParamField>
+
+**Example:**
+```scala
+val exits = List(Exit.succeed(1), Exit.succeed(2), Exit.succeed(3))
+val combined = Exit.collectAll(exits) // Some(Exit.succeed(List(1, 2, 3)))
+```
+
+### collectAllPar
+
+```scala
+def collectAllPar[E, A](exits: Iterable[Exit[E, A]]): Option[Exit[E, List[A]]]
+```
+
+Collects all exits into a single exit in parallel, combining failures in parallel.
+
+## Usage in ZIO
+
+`Exit` is commonly used when:
+
+1. **Inspecting effect outcomes:**
+```scala
+for {
+  exit <- myEffect.exit
+  _    <- exit match {
+    case Exit.Success(value) => ZIO.succeed(println(s"Got: $value"))
+    case Exit.Failure(cause) => ZIO.succeed(println(s"Failed: $cause"))
+  }
+} yield ()
+```
+
+2. **Working with fibers:**
+```scala
+for {
+  fiber <- task.fork
+  exit  <- fiber.await  // Returns Exit[E, A]
+  _     <- exit match {
+    case Exit.Success(value) => handleSuccess(value)
+    case Exit.Failure(cause) => handleFailure(cause)
+  }
+} yield ()
+```
+
+3. **Manual effect execution:**
+```scala
+import zio.Unsafe
+
+Unsafe.unsafe { implicit unsafe =>
+  val exit: Exit[String, Int] = Runtime.default.unsafe.run(myEffect)
+  // Handle the exit...
+}
+```
+
+## Complete Example
+
+```scala
+import zio._
+
+object ExitExample extends ZIOAppDefault {
+  
+  def parseNumber(s: String): IO[String, Int] =
+    ZIO.attempt(s.toInt).mapError(_.getMessage)
+  
+  def run = 
+    for {
+      // Get exit without failing
+      exit1 <- parseNumber("42").exit
+      _     <- Console.printLine(s"Result 1: $exit1")
+      
+      // Pattern match on exit
+      exit2 <- parseNumber("not a number").exit
+      result <- exit2 match {
+        case Exit.Success(n)     => ZIO.succeed(n)
+        case Exit.Failure(cause) => ZIO.succeed(0) // Provide default
+      }
+      _     <- Console.printLine(s"Result 2: $result")
+      
+      // Fold over exit
+      message <- parseNumber("123").exit.map(_.foldExit(
+        cause => s"Failed: $cause",
+        value => s"Parsed: $value"
+      ))
+      _       <- Console.printLine(message)
+      
+    } yield ()
+}
+```

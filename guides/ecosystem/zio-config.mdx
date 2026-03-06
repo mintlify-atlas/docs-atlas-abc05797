@@ -1,0 +1,447 @@
+---
+title: 'ZIO Config'
+description: 'Type-safe, composable configuration management for ZIO applications with support for multiple sources and automatic derivation.'
+keywords: ['zio', 'config', 'configuration', 'environment', 'settings', 'hocon', 'typesafe']
+---
+
+ZIO Config provides a powerful, type-safe approach to configuration management in ZIO applications. It supports multiple configuration sources, automatic derivation, and seamless integration with the ZIO dependency injection system.
+
+## Installation
+
+Add ZIO Config to your `build.sbt`:
+
+```scala build.sbt
+libraryDependencies ++= Seq(
+  "dev.zio" %% "zio-config"          % "4.0.2",
+  "dev.zio" %% "zio-config-magnolia" % "4.0.2",  // For automatic derivation
+  "dev.zio" %% "zio-config-typesafe" % "4.0.2"   // For HOCON support
+)
+```
+
+## Core Concepts
+
+### Config Descriptions
+
+Configuration is described using `Config[A]`, which defines how to read a value of type `A` from configuration sources.
+
+```scala
+import zio.Config
+
+val portConfig: Config[Int] = Config.int("port")
+val hostConfig: Config[String] = Config.string("host")
+```
+
+### Automatic Derivation
+
+ZIO Config can automatically derive configuration for case classes:
+
+```scala
+import zio._
+import zio.config._
+import zio.config.magnolia._
+
+case class HttpServerConfig(host: String, port: Int, nThreads: Int)
+
+object HttpServerConfig {
+  val config: Config[HttpServerConfig] =
+    deriveConfig[HttpServerConfig].nested("HttpServerConfig")
+}
+```
+
+<Info>
+The `magnolia` module enables automatic derivation using macros, eliminating boilerplate for simple configuration structures.
+</Info>
+
+## Basic Usage
+
+### Reading Configuration
+
+Read configuration from the default sources (environment variables, system properties, etc.):
+
+```scala
+import zio._
+
+val program = for {
+  config <- ZIO.config(HttpServerConfig.config)
+  _      <- Console.printLine(s"Server starting on ${config.host}:${config.port}")
+  _      <- Console.printLine(s"Using ${config.nThreads} threads")
+} yield ()
+```
+
+### Providing Configuration Values
+
+You can provide configuration programmatically for testing:
+
+```scala
+import zio._
+
+val testConfig = ConfigProvider.fromMap(
+  Map(
+    "HttpServerConfig.host" -> "localhost",
+    "HttpServerConfig.port" -> "8080",
+    "HttpServerConfig.nThreads" -> "4"
+  )
+)
+
+val program = ZIO.config(HttpServerConfig.config)
+val test = program.provide(ZLayer.succeed(testConfig))
+```
+
+## Manual Configuration Derivation
+
+For more control, define configurations manually:
+
+```scala
+import zio._
+import zio.config._
+
+case class DatabaseConfig(
+  host: String,
+  port: Int,
+  database: String,
+  username: String,
+  password: String
+)
+
+object DatabaseConfig {
+  val config: Config[DatabaseConfig] =
+    (Config.string("host") ++
+     Config.int("port").withDefault(5432) ++
+     Config.string("database") ++
+     Config.string("username") ++
+     Config.secret("password")).map {
+      case (host, port, database, username, password) =>
+        DatabaseConfig(host, port, database, username, password)
+    }.nested("database")
+}
+```
+
+<Warning>
+Use `Config.secret` for sensitive values like passwords. This ensures they won't be logged or displayed in error messages.
+</Warning>
+
+## HOCON Configuration
+
+### Using Typesafe Config
+
+Load configuration from HOCON files:
+
+```scala
+import zio._
+import zio.config._
+import zio.config.typesafe._
+import com.typesafe.config.ConfigFactory
+
+val hoconSource = ConfigProvider.fromHoconString(
+  """
+  HttpServerConfig {
+    host = "0.0.0.0"
+    port = 8080
+    nThreads = 8
+  }
+  
+  database {
+    host = "localhost"
+    port = 5432
+    database = "myapp"
+    username = "user"
+    password = "secret"
+  }
+  """
+)
+
+val program = ZIO.config(HttpServerConfig.config).provide(
+  Runtime.setConfigProvider(hoconSource)
+)
+```
+
+### Loading from Files
+
+Load configuration from application.conf:
+
+```scala
+import zio._
+import zio.config.typesafe._
+import com.typesafe.config.ConfigFactory
+
+val configLayer = ZLayer {
+  ZIO.attempt(ConfigFactory.load())
+    .map(TypesafeConfigProvider.fromTypesafeConfig)
+}
+
+val program = for {
+  config <- ZIO.config(HttpServerConfig.config)
+  _      <- Console.printLine(s"Loaded config: $config")
+} yield ()
+
+val app = program.provide(Runtime.setConfigProvider(configLayer))
+```
+
+## Nested Configuration
+
+Organize complex configurations hierarchically:
+
+```scala
+import zio._
+import zio.config._
+import zio.config.magnolia._
+
+case class ServerConfig(host: String, port: Int)
+case class DatabaseConfig(url: String, poolSize: Int)
+case class AppConfig(server: ServerConfig, database: DatabaseConfig)
+
+object ServerConfig {
+  implicit val config: Config[ServerConfig] = deriveConfig[ServerConfig]
+}
+
+object DatabaseConfig {
+  implicit val config: Config[DatabaseConfig] = deriveConfig[DatabaseConfig]
+}
+
+object AppConfig {
+  val config: Config[AppConfig] = deriveConfig[AppConfig].nested("app")
+}
+```
+
+Corresponding HOCON:
+
+```hocon application.conf
+app {
+  server {
+    host = "localhost"
+    port = 8080
+  }
+  
+  database {
+    url = "jdbc:postgresql://localhost:5432/mydb"
+    poolSize = 10
+  }
+}
+```
+
+## Environment-Specific Configuration
+
+Load different configurations based on environment:
+
+```scala
+import zio._
+import zio.config._
+import zio.config.typesafe._
+import com.typesafe.config.ConfigFactory
+
+def loadConfig(env: String): Task[ConfigProvider] =
+  ZIO.attempt {
+    val config = ConfigFactory
+      .parseResources(s"application-$env.conf")
+      .withFallback(ConfigFactory.parseResources("application.conf"))
+      .resolve()
+    
+    TypesafeConfigProvider.fromTypesafeConfig(config)
+  }
+
+val program = for {
+  env      <- System.env("APP_ENV").map(_.getOrElse("development"))
+  provider <- loadConfig(env)
+  _        <- ZIO.withConfigProvider(provider) {
+                ZIO.config(AppConfig.config).flatMap { config =>
+                  Console.printLine(s"Running in $env mode: $config")
+                }
+              }
+} yield ()
+```
+
+## Validation and Defaults
+
+### Default Values
+
+Provide fallback values for optional configuration:
+
+```scala
+import zio._
+import zio.config._
+
+case class CacheConfig(
+  enabled: Boolean,
+  ttl: Duration,
+  maxSize: Int
+)
+
+object CacheConfig {
+  val config: Config[CacheConfig] =
+    (Config.boolean("enabled").withDefault(true) ++
+     Config.duration("ttl").withDefault(5.minutes) ++
+     Config.int("maxSize").withDefault(1000)).map {
+      case (enabled, ttl, maxSize) =>
+        CacheConfig(enabled, ttl, maxSize)
+    }.nested("cache")
+}
+```
+
+### Custom Validation
+
+Add validation rules to configuration:
+
+```scala
+import zio._
+import zio.config._
+
+val portConfig: Config[Int] =
+  Config.int("port").validate("Port must be between 1 and 65535") { port =>
+    port >= 1 && port <= 65535
+  }
+
+val emailConfig: Config[String] =
+  Config.string("email").validate("Invalid email format") { email =>
+    email.contains("@") && email.contains(".")
+  }
+```
+
+## Integration with ZLayer
+
+Use configuration with ZIO's dependency injection:
+
+```scala
+import zio._
+
+trait DatabaseService {
+  def query(sql: String): Task[List[String]]
+}
+
+object DatabaseService {
+  def query(sql: String): ZIO[DatabaseService, Throwable, List[String]] =
+    ZIO.serviceWithZIO[DatabaseService](_.query(sql))
+}
+
+case class DatabaseServiceLive(config: DatabaseConfig) extends DatabaseService {
+  def query(sql: String): Task[List[String]] =
+    ZIO.succeed(List(s"Result for: $sql"))
+}
+
+object DatabaseServiceLive {
+  val layer: ZLayer[Any, Throwable, DatabaseService] =
+    ZLayer {
+      for {
+        config <- ZIO.config(DatabaseConfig.config)
+      } yield DatabaseServiceLive(config)
+    }
+}
+
+val program = for {
+  results <- DatabaseService.query("SELECT * FROM users")
+  _       <- Console.printLine(s"Results: $results")
+} yield ()
+
+val app = program.provide(DatabaseServiceLive.layer)
+```
+
+## Testing with Configuration
+
+Provide test configuration:
+
+```scala
+import zio._
+import zio.test._
+import zio.config._
+
+object ConfigSpec extends ZIOSpecDefault {
+  val testConfig = ConfigProvider.fromMap(
+    Map(
+      "database.host" -> "localhost",
+      "database.port" -> "5432",
+      "database.database" -> "testdb",
+      "database.username" -> "test",
+      "database.password" -> "test"
+    )
+  )
+
+  def spec = suite("Configuration"(
+    test("load database config") {
+      val program = ZIO.config(DatabaseConfig.config)
+      
+      program.map { config =>
+        assertTrue(
+          config.host == "localhost",
+          config.port == 5432,
+          config.database == "testdb"
+        )
+      }.provide(Runtime.setConfigProvider(testConfig))
+    }
+  )
+}
+```
+
+## Best Practices
+
+<AccordionGroup>
+  <Accordion title="Organize by Domain">
+    Group related configuration together:
+
+    ```scala
+    case class ServerConfig(http: HttpConfig, grpc: GrpcConfig)
+    case class HttpConfig(port: Int, host: String)
+    case class GrpcConfig(port: Int, maxMessageSize: Int)
+    ```
+  </Accordion>
+
+  <Accordion title="Use Descriptive Names">
+    Make configuration keys self-documenting:
+
+    ```scala
+    // Good
+    Config.int("http.server.request.timeout.seconds")
+    
+    // Avoid
+    Config.int("timeout")
+    ```
+  </Accordion>
+
+  <Accordion title="Validate Early">
+    Fail fast if configuration is invalid:
+
+    ```scala
+    val config: Config[Int] = Config.int("workers")
+      .validate("Worker count must be positive")(_ > 0)
+      .validate("Worker count must not exceed 1000")(_ <= 1000)
+    ```
+  </Accordion>
+
+  <Accordion title="Document Required Values">
+    Use comments in application.conf to document configuration:
+
+    ```hocon
+    # Database connection settings
+    database {
+      # Database host (required)
+      host = "localhost"
+      
+      # Database port (default: 5432)
+      port = 5432
+    }
+    ```
+  </Accordion>
+</AccordionGroup>
+
+## Additional Resources
+
+<CardGroup cols={2}>
+  <Card title="ZIO Config Documentation" icon="book" href="https://zio.dev/zio-config/">
+    Official ZIO Config documentation
+  </Card>
+  <Card title="GitHub Repository" icon="github" href="https://github.com/zio/zio-config">
+    Source code and examples
+  </Card>
+</CardGroup>
+
+## Next Steps
+
+<Steps>
+  <Step title="Explore Advanced Features">
+    Learn about config refinement, custom config sources, and config reloading.
+  </Step>
+  <Step title="Integrate with Services">
+    Use ZIO Config with ZLayer to configure your entire application.
+  </Step>
+  <Step title="Set Up Multiple Environments">
+    Configure development, staging, and production environments.
+  </Step>
+</Steps>

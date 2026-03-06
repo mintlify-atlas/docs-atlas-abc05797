@@ -1,0 +1,300 @@
+---
+title: STM Overview
+description: Introduction to Software Transactional Memory in ZIO
+---
+
+## What is STM?
+
+Software Transactional Memory (STM) is a concurrency control mechanism that allows you to compose atomic operations in a safe and composable way. It is the software analog of database transactions, providing a powerful alternative to locks and traditional synchronization mechanisms.
+
+<Info>
+STM in ZIO is inspired by Haskell's STM implementation, as described in "Composable Memory Transactions" by Tim Harris, Simon Marlow, Simon Peyton Jones, and Maurice Herlihy.
+</Info>
+
+## Why STM?
+
+Traditional lock-based concurrency has several problems:
+
+- **Deadlocks**: Multiple threads waiting for each other's locks
+- **Lost updates**: Race conditions where updates are overwritten
+- **Non-composable**: Difficult to combine atomic operations
+- **Error-prone**: Easy to forget locks or use them incorrectly
+
+STM solves these problems by providing:
+
+- **Automatic retry**: Transactions retry automatically on conflicts
+- **Composability**: Atomic operations compose naturally
+- **No deadlocks**: The runtime handles synchronization
+- **Isolation**: Transactions see a consistent snapshot of memory
+
+## Core Concept
+
+STM works like database transactions:
+
+1. **Begin** a transaction
+2. **Read** and **write** transactional variables
+3. **Commit** the transaction atomically
+4. **Retry** automatically if conflicts detected
+
+```scala
+import zio._
+import zio.stm._
+
+// Create transactional references
+val transfer: UIO[Int] = for {
+  sender   <- TRef.makeCommit(1000)
+  receiver <- TRef.makeCommit(0)
+  
+  // Transfer money atomically
+  result <- STM.atomically {
+    for {
+      balance <- sender.get
+      _       <- STM.check(balance >= 100)  // Retry if insufficient funds
+      _       <- sender.update(_ - 100)
+      _       <- receiver.update(_ + 100)
+      newBalance <- receiver.get
+    } yield newBalance
+  }
+} yield result
+```
+
+## Key Components
+
+### ZSTM[R, E, A]
+
+The core STM effect type representing a transactional computation:
+
+- `R`: Environment requirements
+- `E`: Error type
+- `A`: Success value type
+
+```scala
+val transaction: STM[String, Int] = 
+  STM.fail("error") // or STM.succeed(42)
+```
+
+### STM.atomically
+
+Executes an STM transaction atomically, converting it to a `ZIO` effect:
+
+```scala
+val stmEffect: STM[Nothing, Int] = STM.succeed(42)
+val zioEffect: UIO[Int] = STM.atomically(stmEffect)
+```
+
+### STM.retry
+
+Aborts and retries the transaction when conditions aren't met:
+
+```scala
+val waitUntilPositive: TRef[Int] => STM[Nothing, Int] = ref =>
+  for {
+    value <- ref.get
+    result <- if (value > 0) STM.succeed(value)
+              else STM.retry  // Wait for value to become positive
+  } yield result
+```
+
+### STM.check
+
+Convenience method that retries if a condition is false:
+
+```scala
+val checkBalance: TRef[Int] => STM[Nothing, Unit] = balance =>
+  for {
+    amount <- balance.get
+    _ <- STM.check(amount >= 100)  // Retry if balance < 100
+  } yield ()
+```
+
+## Transactional Data Structures
+
+ZIO STM provides several transactional data structures:
+
+<CardGroup cols={2}>
+  <Card title="TRef" icon="box" href="/stm/tref">
+    Transactional reference - mutable cell
+  </Card>
+  <Card title="TArray" icon="table" href="/stm/tarray">
+    Transactional array with atomic operations
+  </Card>
+  <Card title="TMap" icon="hashtag" href="/stm/tmap">
+    Transactional hash map
+  </Card>
+  <Card title="TQueue" icon="stream" href="/stm/tqueue">
+    Transactional queue with backpressure
+  </Card>
+</CardGroup>
+
+## Transaction Guarantees
+
+### Atomicity
+
+All operations in a transaction happen atomically - either all succeed or none do:
+
+```scala
+val atomicUpdate: UIO[Unit] = for {
+  ref1 <- TRef.makeCommit(10)
+  ref2 <- TRef.makeCommit(20)
+  
+  _ <- STM.atomically {
+    for {
+      _ <- ref1.update(_ + 5)
+      _ <- ref2.update(_ - 5)
+    } yield ()
+  }
+} yield ()
+```
+
+### Consistency
+
+Transactions see a consistent snapshot of memory:
+
+```scala
+val consistent: TRef[Int] => TRef[Int] => STM[Nothing, Boolean] = 
+  (ref1, ref2) =>
+    for {
+      a <- ref1.get
+      b <- ref2.get
+    } yield a + b == 100  // Always sees consistent state
+```
+
+### Isolation
+
+Transactions are isolated from each other - intermediate states are never visible:
+
+```scala
+// Other transactions never see intermediate state
+val isolated: STM[Nothing, Unit] = for {
+  ref <- TRef.make(0)
+  _   <- ref.set(1)  // Intermediate state
+  _   <- ref.set(2)  // Final state
+} yield ()  // Only final state visible outside transaction
+```
+
+## Composing Transactions
+
+One of STM's greatest strengths is composability. You can build complex transactions from simple ones:
+
+```scala
+import zio._
+import zio.stm._
+
+// Simple operations
+def withdraw(account: TRef[Int], amount: Int): STM[String, Unit] =
+  for {
+    balance <- account.get
+    _       <- STM.check(balance >= amount)
+    _       <- account.update(_ - amount)
+  } yield ()
+
+def deposit(account: TRef[Int], amount: Int): STM[Nothing, Unit] =
+  account.update(_ + amount)
+
+// Composed transaction
+def transfer(
+  from: TRef[Int],
+  to: TRef[Int],
+  amount: Int
+): STM[String, Unit] =
+  for {
+    _ <- withdraw(from, amount)
+    _ <- deposit(to, amount)
+  } yield ()
+```
+
+## Error Handling
+
+STM supports typed errors just like ZIO:
+
+```scala
+val stmWithError: STM[String, Int] = 
+  STM.fail("Something went wrong")
+
+val recovered: STM[Nothing, Int] = 
+  stmWithError.catchAll(error => STM.succeed(-1))
+
+val handled: STM[String, Int] = 
+  stmWithError.orElse(STM.succeed(42))
+```
+
+## Alternative Composition
+
+The `orElse` combinator tries one transaction, and if it retries, tries another:
+
+```scala
+val takeFromEither: TQueue[Int] => TQueue[Int] => STM[Nothing, Int] =
+  (queue1, queue2) =>
+    queue1.take orElse queue2.take  // Take from whichever has items
+```
+
+## Best Practices
+
+<Warning>
+**Keep Transactions Pure**
+
+STM transactions may be executed multiple times due to retries. Never perform side effects (I/O, logging, etc.) inside transactions.
+</Warning>
+
+### Good
+
+```scala
+val good: UIO[Int] = for {
+  ref <- TRef.makeCommit(0)
+  value <- STM.atomically(ref.updateAndGet(_ + 1))
+  _ <- Console.printLine(s"Value: $value")  // Side effect outside transaction
+} yield value
+```
+
+### Bad
+
+```scala
+val bad: UIO[Int] = for {
+  ref <- TRef.makeCommit(0)
+  value <- STM.atomically {
+    for {
+      v <- ref.updateAndGet(_ + 1)
+      // DON'T DO THIS - side effect inside transaction!
+      _ <- ZSTM.succeed(println(s"Value: $v"))
+    } yield v
+  }
+} yield value
+```
+
+<Tip>
+**Use Immutable Values**
+
+Always use immutable values in transactional variables. Mutable values can lead to inconsistent state.
+</Tip>
+
+### Performance Tips
+
+1. **Keep transactions short**: Long transactions are more likely to conflict
+2. **Minimize contention**: Avoid hotspots where many transactions access the same variables
+3. **Use appropriate data structures**: Choose the right STM data structure for your use case
+4. **Batch operations**: Group related updates into single transactions
+
+## When to Use STM
+
+**Good use cases:**
+
+- Coordinating multiple shared variables
+- Building composable concurrent abstractions
+- Avoiding deadlocks in complex synchronization
+- Implementing retry logic automatically
+
+**Consider alternatives when:**
+
+- Single variable updates (use `Ref` instead)
+- High contention scenarios (may have performance overhead)
+- Side effects required (use `ZIO` effects)
+
+## Next Steps
+
+Explore the individual STM data structures:
+
+- [ZSTM](/stm/zstm) - The core STM effect type
+- [TRef](/stm/tref) - Transactional references
+- [TArray](/stm/tarray) - Transactional arrays
+- [TMap](/stm/tmap) - Transactional maps
+- [TQueue](/stm/tqueue) - Transactional queues

@@ -1,0 +1,490 @@
+---
+title: 'ZIO Kafka'
+description: 'Build robust, streaming Kafka applications with ZIO Kafka - a high-level, type-safe wrapper for Apache Kafka.'
+keywords: ['zio', 'kafka', 'streaming', 'producer', 'consumer', 'messaging', 'events']
+---
+
+ZIO Kafka provides a purely functional, type-safe interface to Apache Kafka. It offers excellent integration with ZIO Streams, automatic resource management, and built-in error handling for building robust streaming applications.
+
+## Installation
+
+Add ZIO Kafka to your `build.sbt`:
+
+```scala build.sbt
+libraryDependencies += "dev.zio" %% "zio-kafka" % "2.9.0"
+```
+
+<Info>
+ZIO Kafka requires Apache Kafka 2.0 or higher. Make sure your Kafka cluster is compatible.
+</Info>
+
+## Core Concepts
+
+### Consumer
+
+Consumers subscribe to Kafka topics and process messages as a ZIO Stream:
+
+```scala
+import zio._
+import zio.kafka.consumer._
+import zio.kafka.serde._
+
+val consumer = Consumer.subscribeAnd(Subscription.topics("my-topic"))
+  .plainStream(Serde.string, Serde.string)
+```
+
+### Producer
+
+Producers send records to Kafka topics:
+
+```scala
+import zio._
+import zio.kafka.producer._
+import zio.kafka.serde._
+
+val producer = Producer.produce(
+  ProducerRecord("my-topic", "key", "value"),
+  Serde.string,
+  Serde.string
+)
+```
+
+## Consuming Messages
+
+### Basic Consumer
+
+Create a simple consumer that processes messages:
+
+```scala
+import zio._
+import zio.kafka.consumer._
+import zio.kafka.serde._
+import zio.stream._
+
+object KafkaConsumerExample extends ZIOAppDefault {
+  val consumerSettings = ConsumerSettings(List("localhost:9092"))
+    .withGroupId("my-consumer-group")
+
+  val consumer: ZStream[Consumer, Throwable, String] =
+    Consumer
+      .subscribeAnd(Subscription.topics("my-topic"))
+      .plainStream(Serde.string, Serde.string)
+      .map(_.value)
+
+  override def run =
+    consumer
+      .tap(message => Console.printLine(s"Received: $message"))
+      .runDrain
+      .provide(Consumer.make(consumerSettings))
+}
+```
+
+### Consumer with Offset Management
+
+Manually control offset commits for better control:
+
+```scala
+import zio._
+import zio.kafka.consumer._
+import zio.kafka.serde._
+
+val consumerWithOffsets =
+  Consumer
+    .subscribeAnd(Subscription.topics("orders"))
+    .plainStream(Serde.string, Serde.string)
+    .mapZIO { record =>
+      for {
+        _ <- processOrder(record.value)
+        _ <- record.offset.commit
+      } yield ()
+    }
+
+def processOrder(order: String): Task[Unit] =
+  Console.printLine(s"Processing order: $order")
+```
+
+### Batch Processing
+
+Process messages in batches for better throughput:
+
+```scala
+import zio._
+import zio.kafka.consumer._
+import zio.kafka.serde._
+import zio.stream._
+
+val batchConsumer =
+  Consumer
+    .subscribeAnd(Subscription.topics("events"))
+    .plainStream(Serde.string, Serde.string)
+    .mapChunks { chunk =>
+      println(s"Processing batch of ${chunk.size} messages")
+      chunk
+    }
+    .aggregateAsync(Consumer.offsetBatches)
+    .mapZIO(_.commit)
+```
+
+<Tip>
+Use batching when processing many small messages to reduce the overhead of individual offset commits.
+</Tip>
+
+## Producing Messages
+
+### Basic Producer
+
+Send messages to a Kafka topic:
+
+```scala
+import zio._
+import zio.kafka.producer._
+import zio.kafka.serde._
+
+object KafkaProducerExample extends ZIOAppDefault {
+  val producerSettings = ProducerSettings(List("localhost:9092"))
+
+  val produce = for {
+    _ <- Producer.produce(
+           ProducerRecord("my-topic", "key-1", "value-1"),
+           Serde.string,
+           Serde.string
+         )
+    _ <- Console.printLine("Message sent successfully")
+  } yield ()
+
+  override def run =
+    produce.provide(Producer.make(producerSettings))
+}
+```
+
+### Batch Production
+
+Send multiple messages efficiently:
+
+```scala
+import zio._
+import zio.kafka.producer._
+import zio.kafka.serde._
+
+val records = Chunk(
+  ProducerRecord("events", "key-1", "event-1"),
+  ProducerRecord("events", "key-2", "event-2"),
+  ProducerRecord("events", "key-3", "event-3")
+)
+
+val batchProduce =
+  Producer.produceChunk(records, Serde.string, Serde.string)
+```
+
+### Streaming Production
+
+Produce messages from a ZIO Stream:
+
+```scala
+import zio._
+import zio.kafka.producer._
+import zio.kafka.serde._
+import zio.stream._
+
+val eventStream: ZStream[Any, Nothing, (String, String)] =
+  ZStream.iterate(1)(_ + 1).map { n =>
+    (s"key-$n", s"event-$n")
+  }
+
+val streamProduction =
+  eventStream
+    .map { case (key, value) =>
+      ProducerRecord("events", key, value)
+    }
+    .chunks
+    .mapZIO(chunk => Producer.produceChunk(chunk, Serde.string, Serde.string))
+    .runDrain
+```
+
+## Custom Serialization
+
+### JSON Serialization
+
+Use ZIO JSON for custom message types:
+
+```scala
+import zio._
+import zio.json._
+import zio.kafka.serde._
+
+case class Order(id: String, amount: Double, customerId: String)
+
+object Order {
+  implicit val encoder: JsonEncoder[Order] = DeriveJsonEncoder.gen[Order]
+  implicit val decoder: JsonDecoder[Order] = DeriveJsonDecoder.gen[Order]
+
+  val serde: Serde[Any, Order] = Serde.string.inmapM { json =>
+    ZIO.fromEither(json.fromJson[Order]).mapError { error =>
+      new RuntimeException(s"Failed to decode Order: $error")
+    }
+  } { order =>
+    ZIO.succeed(order.toJson)
+  }
+}
+```
+
+### Binary Serialization
+
+Implement custom binary serializers:
+
+```scala
+import zio._
+import zio.kafka.serde._
+import java.nio.ByteBuffer
+
+case class Event(timestamp: Long, eventType: String, data: Array[Byte])
+
+object Event {
+  val serde: Serde[Any, Event] = Serde.byteArray.inmapM { bytes =>
+    ZIO.attempt {
+      val buffer = ByteBuffer.wrap(bytes)
+      val timestamp = buffer.getLong
+      val typeLength = buffer.getInt
+      val typeBytes = new Array[Byte](typeLength)
+      buffer.get(typeBytes)
+      val eventType = new String(typeBytes)
+      val data = new Array[Byte](buffer.remaining)
+      buffer.get(data)
+      Event(timestamp, eventType, data)
+    }
+  } { event =>
+    ZIO.attempt {
+      val typeBytes = event.eventType.getBytes
+      val buffer = ByteBuffer.allocate(8 + 4 + typeBytes.length + event.data.length)
+      buffer.putLong(event.timestamp)
+      buffer.putInt(typeBytes.length)
+      buffer.put(typeBytes)
+      buffer.put(event.data)
+      buffer.array()
+    }
+  }
+}
+```
+
+## Error Handling
+
+### Retrying Failed Messages
+
+Handle transient failures with retry logic:
+
+```scala
+import zio._
+import zio.kafka.consumer._
+import zio.kafka.serde._
+
+val resilientConsumer =
+  Consumer
+    .subscribeAnd(Subscription.topics("orders"))
+    .plainStream(Serde.string, Serde.string)
+    .mapZIO { record =>
+      processOrder(record.value)
+        .retry(Schedule.exponential(1.second) && Schedule.recurs(3))
+        .foldZIO(
+          error => Console.printLine(s"Failed to process: $error") *> record.offset.commit,
+          _ => record.offset.commit
+        )
+    }
+```
+
+### Dead Letter Queue
+
+Send failed messages to a DLQ:
+
+```scala
+import zio._
+import zio.kafka.consumer._
+import zio.kafka.producer._
+import zio.kafka.serde._
+
+def processWithDLQ(record: CommittableRecord[String, String]): RIO[Producer, Unit] =
+  processOrder(record.value)
+    .foldZIO(
+      error => for {
+        _ <- Console.printLine(s"Processing failed: $error")
+        _ <- Producer.produce(
+               ProducerRecord("orders-dlq", record.key.getOrElse(""), record.value),
+               Serde.string,
+               Serde.string
+             )
+        _ <- record.offset.commit
+      } yield (),
+      _ => record.offset.commit
+    )
+
+val consumerWithDLQ =
+  Consumer
+    .subscribeAnd(Subscription.topics("orders"))
+    .plainStream(Serde.string, Serde.string)
+    .mapZIO(processWithDLQ)
+```
+
+## Advanced Patterns
+
+### Stream Processing Pipeline
+
+Build complex stream processing pipelines:
+
+```scala
+import zio._
+import zio.kafka.consumer._
+import zio.kafka.producer._
+import zio.kafka.serde._
+import zio.stream._
+
+val pipeline =
+  Consumer
+    .subscribeAnd(Subscription.topics("raw-events"))
+    .plainStream(Serde.string, Serde.string)
+    .map(_.value)
+    .mapZIO(parseEvent)
+    .filter(_.isValid)
+    .map(enrichEvent)
+    .grouped(100)
+    .mapZIO { batch =>
+      val records = batch.map { event =>
+        ProducerRecord("processed-events", event.id, event.toJson)
+      }
+      Producer.produceChunk(Chunk.fromIterable(records), Serde.string, Serde.string)
+    }
+    .runDrain
+```
+
+### Consumer Rebalancing
+
+Handle partition rebalancing:
+
+```scala
+import zio._
+import zio.kafka.consumer._
+import zio.kafka.consumer.diagnostics._
+
+val rebalanceListener = new Rebalance {
+  override def onAssigned(assigned: Set[TopicPartition]): UIO[Unit] =
+    Console.printLine(s"Partitions assigned: $assigned").orDie
+
+  override def onRevoked(revoked: Set[TopicPartition]): UIO[Unit] =
+    Console.printLine(s"Partitions revoked: $revoked").orDie
+}
+
+val consumerSettings = ConsumerSettings(List("localhost:9092"))
+  .withGroupId("my-group")
+  .withRebalanceListener(rebalanceListener)
+```
+
+## Testing
+
+Test Kafka consumers and producers:
+
+```scala
+import zio._
+import zio.test._
+import zio.kafka.consumer._
+import zio.kafka.producer._
+import zio.kafka.serde._
+import zio.kafka.testkit._
+
+object KafkaSpec extends ZIOSpecDefault {
+  def spec = suite("Kafka"(
+    test("produce and consume message") {
+      val topic = "test-topic"
+      
+      for {
+        _ <- Producer.produce(
+               ProducerRecord(topic, "key", "value"),
+               Serde.string,
+               Serde.string
+             )
+        messages <- Consumer
+                     .subscribeAnd(Subscription.topics(topic))
+                     .plainStream(Serde.string, Serde.string)
+                     .take(1)
+                     .runCollect
+      } yield assertTrue(messages.head.value == "value")
+    }
+  ).provide(
+    KafkaTestUtils.embeddedKafkaLayer,
+    Producer.live,
+    Consumer.live
+  )
+}
+```
+
+<Warning>
+For integration tests, consider using TestContainers with Kafka or an embedded Kafka instance.
+</Warning>
+
+## Best Practices
+
+<AccordionGroup>
+  <Accordion title="Consumer Groups">
+    Use consumer groups for parallel processing:
+
+    - Each consumer in a group processes different partitions
+    - Kafka automatically balances partitions across consumers
+    - Set a meaningful group ID for monitoring
+  </Accordion>
+
+  <Accordion title="Offset Management">
+    Choose the right offset commit strategy:
+
+    - `commitBatch` for throughput
+    - Manual commits for exactly-once semantics
+    - Enable auto-commit for simple use cases
+  </Accordion>
+
+  <Accordion title="Performance Tuning">
+    Optimize for your workload:
+
+    ```scala
+    val settings = ConsumerSettings(brokers)
+      .withMaxPollRecords(500)
+      .withMaxPollInterval(5.minutes)
+      .withPollTimeout(100.millis)
+    ```
+  </Accordion>
+
+  <Accordion title="Monitoring">
+    Track key metrics:
+
+    - Consumer lag
+    - Message processing rate
+    - Error rates
+    - Rebalancing frequency
+  </Accordion>
+</AccordionGroup>
+
+## Additional Resources
+
+<CardGroup cols={2}>
+  <Card title="ZIO Kafka Documentation" icon="book" href="https://zio.dev/zio-kafka/">
+    Official ZIO Kafka documentation
+  </Card>
+  <Card title="GitHub Repository" icon="github" href="https://github.com/zio/zio-kafka">
+    Source code and examples
+  </Card>
+  <Card title="Apache Kafka Documentation" icon="book" href="https://kafka.apache.org/documentation/">
+    Official Kafka documentation
+  </Card>
+  <Card title="Kafka Best Practices" icon="lightbulb" href="https://docs.confluent.io/platform/current/kafka/best-practices.html">
+    Confluent's Kafka best practices
+  </Card>
+</CardGroup>
+
+## Next Steps
+
+<Steps>
+  <Step title="Set Up Kafka Cluster">
+    Deploy Kafka in your environment or use a managed service like Confluent Cloud.
+  </Step>
+  <Step title="Implement Monitoring">
+    Add metrics and observability to track consumer lag and throughput.
+  </Step>
+  <Step title="Build Event-Driven Architectures">
+    Combine ZIO Kafka with ZIO Streams for complex event processing pipelines.
+  </Step>
+</Steps>

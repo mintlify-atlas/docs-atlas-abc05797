@@ -1,0 +1,593 @@
+---
+title: 'TMap'
+description: 'Transactional hash map for atomic key-value operations'
+---
+
+# TMap
+
+`TMap[K, V]` is a transactional hash map that provides atomic operations on key-value pairs. It's implemented on top of `TRef` and `TArray`, resolving hash collisions via chaining.
+
+## Overview
+
+TMap provides a thread-safe, transactional hash map that can participate in STM transactions. All operations are atomic and composable with other STM operations. Unlike concurrent hash maps that use locks, TMap uses optimistic concurrency control.
+
+## Creating TMap
+
+### empty
+
+```scala
+def empty[K, V]: USTM[TMap[K, V]]
+```
+
+Creates an empty `TMap`.
+
+```scala
+val createMap: USTM[TMap[String, Int]] = TMap.empty
+```
+
+### make
+
+```scala
+def make[K, V](data: (K, V)*): USTM[TMap[K, V]]
+```
+
+Creates a `TMap` initialized with the specified key-value pairs.
+
+```scala
+val createMap: USTM[TMap[String, Int]] = 
+  TMap.make(
+    "alice" -> 100,
+    "bob"   -> 200,
+    "charlie" -> 150
+  )
+```
+
+### fromIterable
+
+```scala
+def fromIterable[K, V](data: => Iterable[(K, V)]): USTM[TMap[K, V]]
+```
+
+Creates a `TMap` from an iterable of key-value pairs.
+
+```scala
+val data = Map("x" -> 1, "y" -> 2, "z" -> 3)
+val createMap: USTM[TMap[String, Int]] = TMap.fromIterable(data)
+```
+
+## Basic Operations
+
+### get
+
+```scala
+def get(k: K): USTM[Option[V]]
+```
+
+Retrieves the value associated with a key.
+
+```scala
+val tx: USTM[Option[Int]] = for {
+  map   <- TMap.make("alice" -> 100)
+  value <- map.get("alice")
+} yield value // Some(100)
+```
+
+### getOrElse
+
+```scala
+def getOrElse(k: K, default: => V): USTM[V]
+```
+
+Retrieves the value or returns a default.
+
+```scala
+val tx: USTM[Int] = for {
+  map   <- TMap.make("alice" -> 100)
+  value <- map.getOrElse("bob", 0)
+} yield value // 0
+```
+
+### getOrElseSTM
+
+```scala
+def getOrElseSTM[R, E](k: K, default: => ZSTM[R, E, V]): ZSTM[R, E, V]
+```
+
+Retrieves the value or computes a default transactionally.
+
+```scala
+val tx: USTM[Int] = for {
+  map     <- TMap.make("alice" -> 100)
+  counter <- TRef.make(0)
+  value   <- map.getOrElseSTM("bob", counter.updateAndGet(_ + 1))
+} yield value
+```
+
+### put
+
+```scala
+def put(k: K, v: V): USTM[Unit]
+```
+
+Inserts or updates a key-value pair.
+
+```scala
+val tx: USTM[Unit] = for {
+  map <- TMap.empty[String, Int]
+  _   <- map.put("alice", 100)
+  _   <- map.put("bob", 200)
+} yield ()
+```
+
+### putIfAbsent
+
+```scala
+def putIfAbsent(k: K, v: V): USTM[Unit]
+```
+
+Inserts a key-value pair only if the key doesn't exist.
+
+```scala
+val tx: USTM[Unit] = for {
+  map <- TMap.make("alice" -> 100)
+  _   <- map.putIfAbsent("alice", 200) // No effect
+  _   <- map.putIfAbsent("bob", 200)   // Adds bob
+} yield ()
+```
+
+### delete
+
+```scala
+def delete(k: K): USTM[Unit]
+```
+
+Removes a key-value pair.
+
+```scala
+val tx: USTM[Unit] = for {
+  map <- TMap.make("alice" -> 100, "bob" -> 200)
+  _   <- map.delete("alice")
+} yield ()
+```
+
+### deleteAll
+
+```scala
+def deleteAll(ks: Iterable[K]): USTM[Unit]
+```
+
+Removes multiple keys.
+
+```scala
+val tx: USTM[Unit] = for {
+  map <- TMap.make("a" -> 1, "b" -> 2, "c" -> 3)
+  _   <- map.deleteAll(List("a", "c"))
+} yield ()
+```
+
+## Query Operations
+
+### contains
+
+```scala
+def contains(k: K): USTM[Boolean]
+```
+
+Checks if a key exists in the map.
+
+```scala
+val tx: USTM[Boolean] = for {
+  map    <- TMap.make("alice" -> 100)
+  exists <- map.contains("alice")
+} yield exists // true
+```
+
+### isEmpty
+
+```scala
+val isEmpty: USTM[Boolean]
+```
+
+Checks if the map is empty.
+
+```scala
+val tx: USTM[Boolean] = for {
+  map   <- TMap.empty[String, Int]
+  empty <- map.isEmpty
+} yield empty // true
+```
+
+### size
+
+```scala
+val size: USTM[Int]
+```
+
+Returns the number of key-value pairs.
+
+```scala
+val tx: USTM[Int] = for {
+  map  <- TMap.make("a" -> 1, "b" -> 2, "c" -> 3)
+  size <- map.size
+} yield size // 3
+```
+
+### keys / values
+
+```scala
+def keys: USTM[List[K]]
+def values: USTM[List[V]]
+```
+
+Retrieves all keys or values.
+
+```scala
+val tx: USTM[(List[String], List[Int])] = for {
+  map    <- TMap.make("alice" -> 100, "bob" -> 200)
+  keys   <- map.keys
+  values <- map.values
+} yield (keys, values)
+```
+
+## Advanced Update Operations
+
+### merge
+
+```scala
+def merge(k: K, v: V)(f: (V, V) => V): USTM[V]
+```
+
+Merges a value with an existing one, or inserts it if absent.
+
+```scala
+val tx: USTM[Int] = for {
+  map   <- TMap.make("alice" -> 100)
+  value <- map.merge("alice", 50)(_ + _) // Adds 50 to existing
+} yield value // 150
+```
+
+### mergeSTM
+
+```scala
+def mergeSTM[R, E](k: K, v: V)(f: (V, V) => ZSTM[R, E, V]): ZSTM[R, E, V]
+```
+
+Merges values using a transactional function.
+
+```scala
+val tx: USTM[Int] = for {
+  map   <- TMap.make("count" -> 10)
+  log   <- TRef.make(List.empty[String])
+  value <- map.mergeSTM("count", 5) { (old, new) =>
+             for {
+               _ <- log.update(s"Merging $old + $new" :: _)
+             } yield old + new
+           }
+} yield value
+```
+
+### updateWith
+
+```scala
+def updateWith(k: K)(f: Option[V] => Option[V]): USTM[Option[V]]
+```
+
+Updates or removes a value based on a function.
+
+```scala
+val tx: USTM[Option[Int]] = for {
+  map <- TMap.make("counter" -> 10)
+  v   <- map.updateWith("counter") {
+           case Some(n) if n > 0 => Some(n - 1)
+           case _                => None // Remove if zero
+         }
+} yield v
+```
+
+### updateWithSTM
+
+```scala
+def updateWithSTM[R, E](k: K)(f: Option[V] => ZSTM[R, E, Option[V]]): ZSTM[R, E, Option[V]]
+```
+
+Updates values using a transactional function.
+
+```scala
+val tx: USTM[Option[Int]] = for {
+  map <- TMap.make("value" -> 100)
+  ref <- TRef.make(50)
+  v   <- map.updateWithSTM("value") {
+           case Some(current) => 
+             ref.get.map(threshold => 
+               if (current > threshold) Some(current) else None
+             )
+           case None => STM.some(0)
+         }
+} yield v
+```
+
+## Bulk Operations
+
+### transform
+
+```scala
+def transform(f: (K, V) => (K, V)): USTM[Unit]
+```
+
+Atomically transforms all key-value pairs.
+
+```scala
+val tx: USTM[Unit] = for {
+  map <- TMap.make("a" -> 1, "b" -> 2, "c" -> 3)
+  _   <- map.transform((k, v) => (k.toUpperCase, v * 2))
+} yield ()
+```
+
+### transformSTM
+
+```scala
+def transformSTM[R, E](f: (K, V) => ZSTM[R, E, (K, V)]): ZSTM[R, E, Unit]
+```
+
+Transforms all entries using a transactional function.
+
+```scala
+val tx: USTM[Unit] = for {
+  map <- TMap.make("alice" -> 100, "bob" -> 200)
+  log <- TRef.make(List.empty[String])
+  _   <- map.transformSTM { (k, v) =>
+           log.update(s"Processing $k" :: _).as((k, v * 2))
+         }
+} yield ()
+```
+
+### transformValues / transformValuesSTM
+
+```scala
+def transformValues(f: V => V): USTM[Unit]
+def transformValuesSTM[R, E](f: V => ZSTM[R, E, V]): ZSTM[R, E, Unit]
+```
+
+Transforms only the values, keeping keys unchanged.
+
+```scala
+val tx: USTM[Unit] = for {
+  map <- TMap.make("a" -> 1, "b" -> 2, "c" -> 3)
+  _   <- map.transformValues(_ * 10)
+} yield ()
+```
+
+## Filtering and Selection
+
+### removeIf / retainIf
+
+```scala
+def removeIf(p: (K, V) => Boolean): USTM[Chunk[(K, V)]]
+def retainIf(p: (K, V) => Boolean): USTM[Chunk[(K, V)]]
+```
+
+Removes or retains entries matching a predicate, returning removed entries.
+
+```scala
+val tx: USTM[Chunk[(String, Int)]] = for {
+  map     <- TMap.make("a" -> 1, "b" -> 2, "c" -> 3, "d" -> 4)
+  removed <- map.removeIf((_, v) => v % 2 == 0)
+} yield removed // Chunk(("b", 2), ("d", 4))
+```
+
+### removeIfDiscard / retainIfDiscard
+
+```scala
+def removeIfDiscard(p: (K, V) => Boolean): USTM[Unit]
+def retainIfDiscard(p: (K, V) => Boolean): USTM[Unit]
+```
+
+Same as above but doesn't return removed entries.
+
+```scala
+val tx: USTM[Unit] = for {
+  map <- TMap.make("a" -> 1, "b" -> 2, "c" -> 3)
+  _   <- map.removeIfDiscard((_, v) => v < 2)
+} yield ()
+```
+
+### find / findSTM
+
+```scala
+def find[A](pf: PartialFunction[(K, V), A]): USTM[Option[A]]
+def findSTM[R, E, A](f: (K, V) => ZSTM[R, Option[E], A]): ZSTM[R, E, Option[A]]
+```
+
+Finds and transforms the first matching entry.
+
+```scala
+val tx: USTM[Option[String]] = for {
+  map <- TMap.make("alice" -> 100, "bob" -> 200, "charlie" -> 150)
+  result <- map.find {
+             case (name, balance) if balance > 150 => 
+               s"$name has high balance"
+           }
+} yield result
+```
+
+### findAll / findAllSTM
+
+```scala
+def findAll[A](pf: PartialFunction[(K, V), A]): USTM[Chunk[A]]
+def findAllSTM[R, E, A](pf: (K, V) => ZSTM[R, Option[E], A]): ZSTM[R, E, Chunk[A]]
+```
+
+Finds all matching entries.
+
+```scala
+val tx: USTM[Chunk[String]] = for {
+  map <- TMap.make("a" -> 1, "b" -> 2, "c" -> 3, "d" -> 4)
+  evens <- map.findAll {
+            case (k, v) if v % 2 == 0 => s"$k=$v"
+          }
+} yield evens // Chunk("b=2", "d=4")
+```
+
+### takeFirst / takeSome
+
+```scala
+def takeFirst[A](pf: PartialFunction[(K, V), A]): USTM[A]
+def takeSome[A](pf: PartialFunction[(K, V), A]): USTM[NonEmptyChunk[A]]
+```
+
+Removes and returns the first or all matching entries. Retries if none found.
+
+```scala
+val tx: USTM[String] = for {
+  map    <- TMap.make("task1" -> "pending", "task2" -> "done")
+  result <- map.takeFirst {
+             case (id, "pending") => id
+           }
+} yield result // "task1", and removes it from map
+```
+
+### takeFirstSTM / takeSomeSTM
+
+```scala
+def takeFirstSTM[R, E, A](pf: (K, V) => ZSTM[R, Option[E], A]): ZSTM[R, E, A]
+def takeSomeSTM[R, E, A](pf: (K, V) => ZSTM[R, Option[E], A]): ZSTM[R, E, NonEmptyChunk[A]]
+```
+
+Takes entries using transactional predicates.
+
+## Iteration
+
+### fold / foldSTM
+
+```scala
+def fold[A](zero: A)(op: (A, (K, V)) => A): USTM[A]
+def foldSTM[R, E, A](zero: A)(op: (A, (K, V)) => ZSTM[R, E, A]): ZSTM[R, E, A]
+```
+
+Folds over all entries.
+
+```scala
+val tx: USTM[Int] = for {
+  map <- TMap.make("a" -> 10, "b" -> 20, "c" -> 30)
+  sum <- map.fold(0) { case (acc, (_, value)) => acc + value }
+} yield sum // 60
+```
+
+### foreach
+
+```scala
+def foreach[R, E](f: (K, V) => ZSTM[R, E, Unit]): ZSTM[R, E, Unit]
+```
+
+Performs an effect for each entry.
+
+```scala
+val tx: USTM[Unit] = for {
+  map <- TMap.make("a" -> 1, "b" -> 2, "c" -> 3)
+  log <- TRef.make(List.empty[String])
+  _   <- map.foreach((k, v) => log.update(s"$k=$v" :: _))
+} yield ()
+```
+
+## Conversion
+
+### toList / toChunk / toMap
+
+```scala
+def toList: USTM[List[(K, V)]]
+def toChunk: USTM[Chunk[(K, V)]]
+def toMap: USTM[Map[K, V]]
+```
+
+Converts the TMap to other collection types.
+
+```scala
+val tx: USTM[Map[String, Int]] = for {
+  tmap <- TMap.make("alice" -> 100, "bob" -> 200)
+  map  <- tmap.toMap
+} yield map
+```
+
+## Example: Concurrent Cache
+
+```scala
+import zio._
+import zio.stm._
+
+class Cache[K, V](private val map: TMap[K, V], private val maxSize: Int) {
+  
+  def get(key: K): UIO[Option[V]] = 
+    map.get(key).commit
+  
+  def put(key: K, value: V): UIO[Unit] = (
+    for {
+      size <- map.size
+      _    <- if (size >= maxSize) 
+               map.toList.flatMap { entries =>
+                 val oldest = entries.head._1
+                 map.delete(oldest)
+               }
+             else STM.unit
+      _    <- map.put(key, value)
+    } yield ()
+  ).commit
+  
+  def getOrCompute(key: K)(compute: K => UIO[V]): UIO[V] = (
+    map.get(key).flatMap {
+      case Some(v) => STM.succeed(v)
+      case None    => STM.succeed(key)
+    }
+  ).commit.flatMap {
+    case v: V => ZIO.succeed(v)
+    case k: K => 
+      compute(k).flatMap { v =>
+        put(k, v).as(v)
+      }
+  }
+}
+
+object Cache {
+  def make[K, V](maxSize: Int): UIO[Cache[K, V]] =
+    TMap.empty[K, V].commit.map(new Cache(_, maxSize))
+}
+```
+
+## Example: Work Queue
+
+```scala
+import zio._
+import zio.stm._
+
+class WorkQueue[K, V](private val map: TMap[K, V]) {
+  
+  def submit(key: K, work: V): UIO[Unit] =
+    map.put(key, work).commit
+  
+  def take(predicate: V => Boolean): UIO[(K, V)] = (
+    map.takeFirst { case (k, v) if predicate(v) => (k, v) }
+  ).commit
+  
+  def pending: UIO[Int] =
+    map.size.commit
+}
+
+object WorkQueue {
+  def make[K, V]: UIO[WorkQueue[K, V]] =
+    TMap.empty[K, V].commit.map(new WorkQueue(_))
+}
+```
+
+## Best Practices
+
+1. **Use appropriate capacity**: TMap automatically resizes, but starting with a good size helps performance
+2. **Batch operations**: Combine multiple operations in a single transaction when possible
+3. **Avoid hot keys**: High contention on specific keys can cause retries
+4. **Keep transactions short**: Minimize work inside transactions to reduce conflicts
+5. **Use takeFirst for work stealing**: Efficient pattern for concurrent task processing
+
+## See Also
+
+- [TRef](/api/tref) - Transactional references
+- [TArray](/api/tarray) - Transactional arrays
+- [ZSTM](/api/zstm) - Core STM effect type
+- [TQueue](/api/tqueue) - Transactional queues

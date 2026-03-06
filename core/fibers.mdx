@@ -1,0 +1,372 @@
+---
+title: 'Fibers'
+description: 'Lightweight threads for concurrent programming in ZIO'
+icon: 'network-wired'
+---
+
+# Fibers
+
+A fiber is a lightweight thread of execution that never consumes more than a whole thread (but may consume much less, depending on contention and asynchronicity). Fibers are spawned by forking ZIO effects, which run concurrently with the parent effect.
+
+## Overview
+
+Fibers are ZIO's fundamental unit of concurrency. Unlike operating system threads, fibers:
+
+<CardGroup cols={2}>
+  <Card title="Lightweight" icon="feather">
+    You can spawn millions of fibers without overwhelming system resources
+  </Card>
+  <Card title="Type-Safe" icon="shield-check">
+    Fibers preserve type information about errors and results
+  </Card>
+  <Card title="Resource-Safe" icon="lock">
+    Fibers automatically release resources when interrupted
+  </Card>
+  <Card title="Composable" icon="layer-group">
+    Fibers can be combined and transformed like effects
+  </Card>
+</CardGroup>
+
+## The Fiber Type
+
+From the source code (`Fiber.scala:45`):
+
+```scala
+/**
+ * A fiber is a lightweight thread of execution that never consumes more than a
+ * whole thread (but may consume much less, depending on contention and
+ * asynchronicity). Fibers are spawned by forking ZIO effects, which run
+ * concurrently with the parent effect.
+ *
+ * Fibers can be joined, yielding their result to other fibers, or interrupted,
+ * which terminates the fiber, safely releasing all resources.
+ */
+sealed abstract class Fiber[+E, +A]
+```
+
+The `Fiber[E, A]` type represents a running computation that can:
+- **Fail** with an error of type `E`
+- **Succeed** with a value of type `A`
+- Be **interrupted** at any time
+
+## Creating Fibers
+
+### Fork an Effect
+
+The primary way to create a fiber is by forking an effect:
+
+```scala
+import zio._
+
+val fiber: UIO[Fiber[String, Int]] = 
+  ZIO.fail("error").as(42).fork
+
+// Fork and immediately start execution
+val computation: Task[Int] = 
+  for {
+    fiber <- heavyComputation.fork
+    _     <- doOtherWork
+    result <- fiber.join  // Wait for fiber to complete
+  } yield result
+```
+
+### Fork in Background
+
+Fork without waiting for the result:
+
+```scala
+val background: UIO[Unit] = 
+  for {
+    _ <- logMetrics.forkDaemon  // Fork as daemon fiber
+    _ <- doMainWork
+  } yield ()
+```
+
+<Info>
+  Daemon fibers run in the background and don't prevent the application from shutting down.
+</Info>
+
+## Working with Fibers
+
+### Joining Fibers
+
+Wait for a fiber to complete and retrieve its result:
+
+```scala
+val joined: Task[String] = 
+  for {
+    fiber  <- fetchData.fork
+    result <- fiber.join  // Returns IO[E, A]
+  } yield result
+```
+
+### Awaiting Fibers
+
+Get the exit status of a fiber:
+
+```scala
+val awaited: UIO[Exit[String, Int]] = 
+  for {
+    fiber <- computation.fork
+    exit  <- fiber.await  // Returns UIO[Exit[E, A]]
+  } yield exit
+```
+
+### Interrupting Fibers
+
+Terminate a fiber early:
+
+```scala
+val interrupted: Task[Unit] = 
+  for {
+    fiber <- longRunningTask.fork
+    _     <- fiber.interrupt  // Safely interrupt the fiber
+  } yield ()
+
+// Interrupt in the background
+val interruptFork: UIO[Unit] = 
+  fiber.interruptFork
+```
+
+<Warning>
+  Interruption is safe and ensures all resources are cleaned up. The fiber will complete any finalizers before terminating.
+</Warning>
+
+## Fiber Operations
+
+### Zipping Fibers
+
+Combine multiple fibers:
+
+```scala
+// Zip two fibers sequentially
+val zipped: Fiber[String, (Int, String)] = 
+  fiber1.zip(fiber2)
+
+// Zip with transformation
+val combined: Fiber[String, Int] = 
+  fiber1.zipWith(fiber2)(_ + _)
+```
+
+### Mapping Fibers
+
+Transform fiber results:
+
+```scala
+val mapped: Fiber[String, String] = 
+  fiber.map(n => s"Result: $n")
+```
+
+### Fiber Supervision
+
+Control parent-child relationships:
+
+```scala
+// Child fibers inherit parent's scope
+val supervised: Task[Unit] = 
+  for {
+    _ <- effect1.fork
+    _ <- effect2.fork
+  } yield ()  // Both fibers are supervised
+
+// Fork with explicit supervision
+val withSupervisor: Task[Unit] = 
+  effect.supervised(customSupervisor)
+```
+
+## Parallel Patterns
+
+### Race Two Effects
+
+Run two effects concurrently, take the first to complete:
+
+```scala
+val raced: Task[String] = 
+  slowEffect.race(fastEffect)
+
+// Race with Either result
+val racedEither: Task[Either[String, Int]] = 
+  effect1.raceEither(effect2)
+```
+
+### Fork All
+
+Fork multiple effects:
+
+```scala
+val allFibers: UIO[Fiber[String, List[Int]]] = 
+  ZIO.forkAll(List(
+    effect1,
+    effect2,
+    effect3
+  ))
+```
+
+### Parallel Execution
+
+Example of parallel work:
+
+```scala
+def parallel[A, B](io1: Task[A], io2: Task[B]): Task[(A, B)] =
+  for {
+    fiber1 <- io1.fork
+    fiber2 <- io2.fork
+    a      <- fiber1.join
+    b      <- fiber2.join
+  } yield (a, b)
+```
+
+## Fiber Introspection
+
+### Fiber ID
+
+Every fiber has a unique identifier:
+
+```scala
+val fiberId: UIO[FiberId] = ZIO.fiberId
+
+val fiberIdFromFiber: FiberId = fiber.id
+```
+
+### Fiber Status
+
+Check if a fiber is running:
+
+```scala
+val descriptor: UIO[Fiber.Descriptor] = ZIO.descriptor
+```
+
+### Children
+
+Access child fibers:
+
+```scala
+val children: UIO[Chunk[Fiber.Runtime[_, _]]] = 
+  fiber.children
+```
+
+## Interruption Model
+
+ZIO's interruption model ensures safety:
+
+<Steps>
+  <Step title="Interruption Request">
+    When a fiber is interrupted, it receives an interruption signal
+  </Step>
+  <Step title="Finalization">
+    The fiber runs all registered finalizers (cleanup code)
+  </Step>
+  <Step title="Completion">
+    The fiber completes with an `Interrupted` cause
+  </Step>
+</Steps>
+
+### Uninterruptible Regions
+
+Mark regions that should not be interrupted:
+
+```scala
+val uninterruptible: Task[Unit] = 
+  criticalSection.uninterruptible
+
+// Restore interruptibility
+val masked: Task[Unit] = 
+  ZIO.uninterruptibleMask { restore =>
+    for {
+      _ <- uninterruptibleWork
+      _ <- restore(interruptibleWork)
+    } yield ()
+  }
+```
+
+## Fiber Scope
+
+Fibers inherit their parent's scope by default:
+
+```scala
+val withScope: Task[Unit] = 
+  ZIO.scoped {
+    for {
+      fiber <- effect.forkScoped  // Fiber closed with scope
+      _     <- doWork
+    } yield ()
+  }  // Fiber automatically interrupted here
+```
+
+<Tip>
+  Use `forkScoped` to tie a fiber's lifetime to a scope. The fiber will be interrupted when the scope closes.
+</Tip>
+
+## Performance Characteristics
+
+<AccordionGroup>
+  <Accordion title="Memory Overhead">
+    Each fiber consumes minimal memory (typically a few hundred bytes). You can easily run millions of fibers.
+  </Accordion>
+  <Accordion title="Context Switching">
+    Fiber context switching is much faster than thread context switching, as it happens in user space.
+  </Accordion>
+  <Accordion title="Scheduling">
+    ZIO's scheduler is cooperative and fair, preventing fiber starvation.
+  </Accordion>
+</AccordionGroup>
+
+## Common Patterns
+
+### Timeout Pattern
+
+```scala
+val withTimeout: Task[Option[String]] = 
+  effect.timeout(10.seconds)
+```
+
+### Retry Pattern
+
+```scala
+val retried: Task[String] = 
+  effect.retry(Schedule.exponential(1.second))
+```
+
+### Background Job
+
+```scala
+val backgroundJob: Task[Unit] = 
+  ZIO.scoped {
+    periodicTask.repeat(Schedule.fixed(5.minutes)).forkScoped
+  }
+```
+
+## Best Practices
+
+<Tip>
+  **Always handle fiber results**: Join fibers or explicitly interrupt them to avoid resource leaks.
+</Tip>
+
+<Tip>
+  **Use racing for timeouts**: Instead of complex timeout logic, use `race` or `timeout` operators.
+</Tip>
+
+<Tip>
+  **Leverage scoped forks**: Use `forkScoped` to automatically clean up fibers when leaving a scope.
+</Tip>
+
+<Warning>
+  **Don't forget daemon fibers**: Daemon fibers won't prevent application shutdown, but they'll be interrupted.
+</Warning>
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Runtime" icon="gears" href="/core/runtime">
+    Learn how fibers are executed by the runtime
+  </Card>
+  <Card title="Error Handling" icon="triangle-exclamation" href="/core/error-handling">
+    Handle errors in concurrent contexts
+  </Card>
+  <Card title="Resource Management" icon="box-archive" href="/core/resource-management">
+    Manage resources across fiber boundaries
+  </Card>
+  <Card title="Concurrency Primitives" icon="cubes" href="/concurrency/overview">
+    Explore Ref, Queue, and other concurrency tools
+  </Card>
+</CardGroup>

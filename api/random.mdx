@@ -1,0 +1,150 @@
+---
+title: "Random"
+description: "Random number generation"
+---
+
+# Random Service
+
+The `Random` service provides pseudo-random number generation.
+
+## Methods
+
+### nextInt
+
+```scala
+val nextInt: UIO[Int]
+```
+
+Generates a random integer.
+
+```scala
+for {
+  n <- Random.nextInt
+  _ <- Console.printLine(s"Random int: $n")
+} yield ()
+```
+
+### nextIntBounded
+
+```scala
+def nextIntBounded(n: => Int): UIO[Int]
+```
+
+Generates a random integer between 0 (inclusive) and n (exclusive).
+
+```scala
+val diceRoll: UIO[Int] = 
+  Random.nextIntBounded(6).map(_ + 1) // 1-6
+```
+
+### nextIntBetween
+
+```scala
+def nextIntBetween(min: => Int, max: => Int): UIO[Int]
+```
+
+Generates a random integer in the specified range.
+
+```scala
+val temperature: UIO[Int] = 
+  Random.nextIntBetween(-10, 40)
+```
+
+### nextLong
+
+```scala
+val nextLong: UIO[Long]
+```
+
+Generates a random long value.
+
+### nextDouble
+
+```scala
+val nextDouble: UIO[Double]
+```
+
+Generates a random double between 0.0 and 1.0.
+
+```scala
+for {
+  prob <- Random.nextDouble
+  result = if (prob < 0.5) "Heads" else "Tails"
+  _ <- Console.printLine(result)
+} yield ()
+```
+
+### nextBoolean
+
+```scala
+val nextBoolean: UIO[Boolean]
+```
+
+Generates a random boolean value.
+
+### nextString
+
+```scala
+def nextString(length: => Int): UIO[String]
+```
+
+Generates a random string of the specified length.
+
+```scala
+val sessionId: UIO[String] = 
+  Random.nextString(32)
+```
+
+### shuffle
+
+```scala
+def shuffle[A](list: => List[A]): UIO[List[A]]
+```
+
+Randomly shuffles a list.
+
+```scala
+val deck = List("A", "2", "3", "4", "5")
+val shuffled: UIO[List[String]] = Random.shuffle(deck)
+```
+
+## Usage Examples
+
+### Dice Game
+
+```scala
+val rollDice: UIO[Int] = 
+  Random.nextIntBounded(6).map(_ + 1)
+
+val game: ZIO[Any, IOException, Unit] =
+  for {
+    roll1 <- rollDice
+    roll2 <- rollDice
+    total = roll1 + roll2
+    _ <- Console.printLine(s"You rolled: $roll1 + $roll2 = $total")
+  } yield ()
+```
+
+### Random Selection
+
+```scala
+def selectRandom[A](items: List[A]): UIO[Option[A]] =
+  if (items.isEmpty) ZIO.succeed(None)
+  else Random.nextIntBounded(items.length).map(i => Some(items(i)))
+```
+
+## Testing
+
+Use `TestRandom` to control random values in tests.
+
+```scala
+for {
+  _ <- TestRandom.feedInts(1, 2, 3)
+  values <- ZIO.collectAll(List.fill(3)(Random.nextInt))
+} yield assertTrue(values == List(1, 2, 3))
+```
+
+## See Also
+
+- [TestRandom](/testing/test-services) - Deterministic random in tests
+- [Gen](/api/test-gen) - Property-based test generators

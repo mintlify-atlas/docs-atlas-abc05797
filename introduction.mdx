@@ -1,0 +1,255 @@
+---
+title: "Introduction to ZIO"
+description: "Learn what ZIO is, why you should use it, and its key features for async and concurrent programming"
+---
+
+# Introduction to ZIO
+
+ZIO is a zero-dependency Scala library for asynchronous and concurrent programming. Powered by highly-scalable, non-blocking fibers that never waste or leak resources, ZIO lets you build scalable, resilient, and reactive applications that meet the needs of your business.
+
+## What is ZIO?
+
+ZIO is a library for building asynchronous, concurrent applications in Scala. At its core, a ZIO effect is an immutable value that describes a workflow:
+
+```scala
+ZIO[R, E, A]
+```
+
+This represents a computation that:
+- **Requires** an environment of type `R`
+- **May fail** with an error of type `E`
+- **Succeeds** with a value of type `A`
+
+You can think of `ZIO[R, E, A]` informally as a function:
+
+```scala
+ZEnvironment[R] => Either[E, A]
+```
+
+But ZIO effects are much more powerful than simple functions—they support asynchronous operations, concurrency, parallelism, resource management, and more.
+
+## Why Use ZIO?
+
+ZIO provides a comprehensive solution for modern application development with several key advantages:
+
+### High Performance
+
+<Card icon="gauge-high">
+  Build scalable applications with minimal runtime overhead. ZIO's fiber-based concurrency model allows you to spawn millions of concurrent operations without the cost of traditional threads.
+</Card>
+
+### Type-Safe
+
+<Card icon="shield-check">
+  Use the full power of the Scala compiler to catch bugs at compile time. ZIO's type system tracks what effects require, what they can fail with, and what they produce.
+</Card>
+
+### Concurrent by Design
+
+<Card icon="arrows-split-up-and-left">
+  Easily build concurrent apps without deadlocks, race conditions, or complexity. ZIO provides high-level primitives like fibers, queues, and STM for safe concurrent programming.
+</Card>
+
+### Resource-Safe
+
+<Card icon="lock">
+  Build apps that never leak resources (including threads!), even when they fail. ZIO's resource management ensures cleanup code always runs.
+</Card>
+
+### Asynchronous Made Simple
+
+<Card icon="code">
+  Write sequential code that looks the same whether it's asynchronous or synchronous. ZIO's for-comprehension syntax makes async code readable.
+</Card>
+
+### Testable
+
+<Card icon="flask">
+  Inject test services into your app for fast, deterministic, and type-safe testing. ZIO Test provides a complete testing framework.
+</Card>
+
+### Resilient
+
+<Card icon="arrows-rotate">
+  Build apps that never lose errors and respond to failure locally and flexibly. ZIO's error model makes it impossible to accidentally swallow errors.
+</Card>
+
+### Functional
+
+<Card icon="cube">
+  Rapidly compose solutions to complex problems from simple building blocks. ZIO effects are highly composable values.
+</Card>
+
+## Key Features
+
+### Lightweight Fibers
+
+ZIO's concurrency is powered by fibers—lightweight, green threads that are incredibly efficient. You can spawn millions of fibers without worrying about system resources:
+
+```scala
+import zio._
+
+// Spawn 1 million concurrent fibers
+val program = ZIO.foreachPar(1 to 1_000_000) { i =>
+  ZIO.succeed(i * 2)
+}
+```
+
+### Composable Error Handling
+
+Handle errors with full type safety. ZIO's error channel lets you track what can go wrong:
+
+```scala
+import zio._
+import java.io.IOException
+
+// Type clearly shows this can fail with IOException
+val readFile: ZIO[Any, IOException, String] = 
+  ZIO.readFile("config.json")
+
+// Recover from errors
+val withDefault: ZIO[Any, Nothing, String] =
+  readFile.catchAll(_ => ZIO.succeed("default config"))
+```
+
+### Built-in Dependency Injection
+
+Use `ZLayer` to manage dependencies in a type-safe, composable way without external DI frameworks:
+
+```scala
+import zio._
+
+trait Database {
+  def query(sql: String): Task[List[String]]
+}
+
+object Database {
+  val live: ZLayer[DatabaseConfig, Nothing, Database] =
+    ZLayer.fromFunction((config: DatabaseConfig) => 
+      new Database {
+        def query(sql: String) = ???
+      }
+    )
+}
+
+// Use the service
+val program: ZIO[Database, Throwable, List[String]] =
+  ZIO.serviceWithZIO[Database](_.query("SELECT * FROM users"))
+```
+
+### Powerful Streaming
+
+Process infinite streams of data efficiently with `ZStream`, including backpressure and resource safety:
+
+```scala
+import zio._
+import zio.stream._
+
+// Process a stream of events
+val stream: ZStream[Any, Nothing, Int] = 
+  ZStream.iterate(0)(_ + 1)
+    .take(100)
+    .filter(_ % 2 == 0)
+    .map(_ * 10)
+```
+
+### Software Transactional Memory
+
+Write lock-free concurrent programs using STM primitives like `TRef`, `TMap`, and `TQueue`:
+
+```scala
+import zio._
+import zio.stm._
+
+// Atomic bank transfer
+def transfer(from: TRef[Int], to: TRef[Int], amount: Int): UIO[Unit] =
+  STM.atomically {
+    for {
+      _ <- from.update(_ - amount)
+      _ <- to.update(_ + amount)
+    } yield ()
+  }
+```
+
+### Comprehensive Testing
+
+Test your ZIO applications with the built-in test framework:
+
+```scala
+import zio._
+import zio.test._
+
+object ExampleSpec extends ZIOSpecDefault {
+  def spec = suite("arithmetic")(    
+    test("addition works") {
+      val result = 1 + 1
+      assertTrue(result == 2)
+    },
+    test("multiplication works") {
+      val result = 3 * 4
+      assertTrue(result == 12)
+    }
+  )
+}
+```
+
+## Production Ready
+
+ZIO is used in production by hundreds of companies worldwide, including:
+
+- Amazon
+- Disney+ Streaming  
+- eBay
+- Nike
+- Zalando
+- And many more...
+
+These companies rely on ZIO to build mission-critical applications that require high performance, reliability, and scalability.
+
+## Zero Dependencies
+
+ZIO has zero external dependencies. This means:
+
+- **Smaller artifacts** - No transitive dependencies to download
+- **Fewer conflicts** - No dependency hell
+- **Better security** - Smaller attack surface
+- **Faster builds** - Less to compile and resolve
+
+## Cross-Platform Support
+
+ZIO runs on multiple platforms:
+
+<CardGroup cols={3}>
+  <Card title="JVM" icon="java">
+    Full-featured support for the Java Virtual Machine
+  </Card>
+  <Card title="Scala.js" icon="js">
+    Run ZIO applications in the browser or Node.js
+  </Card>
+  <Card title="Scala Native" icon="microchip">
+    Compile to native binaries for maximum performance
+  </Card>
+</CardGroup>
+
+## Next Steps
+
+Ready to start using ZIO? Here's where to go next:
+
+<CardGroup cols={2}>
+  <Card title="Quickstart" icon="rocket" href="/quickstart">
+    Build your first ZIO application in minutes
+  </Card>
+  <Card title="Installation" icon="download" href="/installation">
+    Add ZIO to your project with sbt, Mill, or Gradle
+  </Card>
+  <Card title="ZIO Effect" icon="book-open" href="/essentials/zio-effect">
+    Learn the fundamentals of ZIO effects
+  </Card>
+  <Card title="API Reference" icon="code" href="https://javadoc.io/doc/dev.zio/zio_3/latest/zio/index.html">
+    Explore the complete API documentation
+  </Card>
+</CardGroup>
+
+<Note>
+  **Need Help?** Join the ZIO community on [Discord](https://discord.gg/2ccFBr4) to ask questions and connect with other developers.
+</Note>

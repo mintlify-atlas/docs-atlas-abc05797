@@ -1,0 +1,555 @@
+---
+title: ZSTM
+description: The core STM effect type for transactional computations
+---
+
+## Overview
+
+`ZSTM[R, E, A]` represents a transactional effect that can be performed within an STM transaction. It is the foundation of all STM operations in ZIO.
+
+```scala
+trait ZSTM[-R, +E, +A]
+```
+
+**Type parameters:**
+- `R`: Environment requirements
+- `E`: Error type
+- `A`: Success value type
+
+## Type Aliases
+
+```scala
+type STM[+E, +A] = ZSTM[Any, E, A]        // No environment
+type USTM[+A] = ZSTM[Any, Nothing, A]     // No environment, no errors
+type URSTM[-R, +A] = ZSTM[R, Nothing, A]  // No errors
+```
+
+## Creating ZSTM
+
+### Success Values
+
+```scala
+import zio.stm._
+
+// Create from a pure value
+val success: USTM[Int] = 
+  ZSTM.succeed(42)
+
+// Create from a by-name value (lazy)
+val lazy: USTM[String] = 
+  ZSTM.succeed("computed value")
+
+// Create from an already computed value
+val eager: USTM[Int] = 
+  ZSTM.succeedNow(42)
+```
+
+### Failure Values
+
+```scala
+// Fail with a typed error
+val failure: STM[String, Nothing] = 
+  ZSTM.fail("Something went wrong")
+
+// Die with a throwable (unrecoverable)
+val die: USTM[Nothing] = 
+  ZSTM.die(new Exception("Fatal error"))
+
+// Die with a message
+val dieMsg: USTM[Nothing] = 
+  ZSTM.dieMessage("Fatal error occurred")
+```
+
+### From Other Types
+
+```scala
+// From Either
+val fromEither: STM[String, Int] = 
+  ZSTM.fromEither(Right(42))
+
+// From Option
+val fromOption: STM[Option[Nothing], Int] = 
+  ZSTM.fromOption(Some(42))
+
+// From Try
+import scala.util.Try
+val fromTry: STM[Throwable, Int] = 
+  ZSTM.fromTry(Try(42))
+
+// From partial function
+val attempt: STM[Throwable, Int] = 
+  ZSTM.attempt(42 / 2)
+```
+
+## Core Operations
+
+### Committing Transactions
+
+```scala
+import zio._
+import zio.stm._
+
+// Execute STM transaction atomically
+val program: UIO[Int] = for {
+  ref <- TRef.makeCommit(0)
+  result <- STM.atomically {
+    for {
+      _ <- ref.update(_ + 1)
+      value <- ref.get
+    } yield value
+  }
+} yield result
+
+// Shorthand using commit
+val withCommit: UIO[Int] = for {
+  ref <- TRef.makeCommit(0)
+  result <- ref.updateAndGet(_ + 1).commit
+} yield result
+```
+
+### Retry
+
+`retry` aborts and retries the transaction until conditions are met:
+
+```scala
+import zio.stm._
+
+// Retry until value is positive
+def waitPositive(ref: TRef[Int]): STM[Nothing, Int] =
+  for {
+    value <- ref.get
+    result <- if (value > 0) STM.succeed(value)
+              else STM.retry
+  } yield result
+
+// Using STM.check (convenience method)
+def waitPositive2(ref: TRef[Int]): STM[Nothing, Int] =
+  for {
+    value <- ref.get
+    _ <- STM.check(value > 0)  // Retries if condition is false
+  } yield value
+```
+
+<Warning>
+Retrying transactions will block until the condition is satisfied. Use with caution to avoid infinite loops.
+</Warning>
+
+### Checking Conditions
+
+```scala
+import zio._
+import zio.stm._
+
+// Wait for sufficient balance
+def waitForBalance(
+  account: TRef[Int],
+  required: Int
+): STM[Nothing, Unit] =
+  for {
+    balance <- account.get
+    _ <- STM.check(balance >= required)
+  } yield ()
+
+// Use in a larger transaction
+val withdraw: UIO[Unit] = for {
+  account <- TRef.makeCommit(1000)
+  _ <- STM.atomically {
+    for {
+      _ <- waitForBalance(account, 500)
+      _ <- account.update(_ - 500)
+    } yield ()
+  }
+} yield ()
+```
+
+## Transformation
+
+### map
+
+```scala
+val mapped: USTM[String] = 
+  ZSTM.succeed(42).map(_.toString)
+```
+
+### flatMap
+
+```scala
+val chained: STM[String, Int] = 
+  for {
+    ref <- TRef.make(0)
+    _ <- ref.update(_ + 1)
+    value <- ref.get
+  } yield value
+```
+
+### as
+
+```scala
+// Replace success value
+val replaced: USTM[String] = 
+  ZSTM.succeed(42).as("done")
+```
+
+### zipWith
+
+```scala
+val combined: USTM[Int] = 
+  ZSTM.succeed(2).zipWith(ZSTM.succeed(3))(_ * _)
+
+// Using operators
+val sum: USTM[Int] = 
+  ZSTM.succeed(2) <*> ZSTM.succeed(3)
+```
+
+## Error Handling
+
+### catchAll
+
+```scala
+val recovered: USTM[Int] = 
+  ZSTM.fail("error")
+    .catchAll(error => ZSTM.succeed(-1))
+```
+
+### catchSome
+
+```scala
+val partialRecover: STM[String, Int] = 
+  ZSTM.fail("error")
+    .catchSome {
+      case "error" => ZSTM.succeed(0)
+    }
+```
+
+### orElse
+
+```scala
+// Try first transaction, if it fails or retries, try second
+val alternative: USTM[Int] = 
+  ZSTM.fail("error") <> ZSTM.succeed(42)
+```
+
+### orTry
+
+```scala
+// Try first, if it retries (but not fails), try second
+val retryAlternative: USTM[Int] = 
+  ZSTM.retry <|> ZSTM.succeed(42)
+```
+
+### fold
+
+```scala
+val folded: USTM[String] = 
+  ZSTM.fail("error").fold(
+    error => s"Failed: $error",
+    value => s"Success: $value"
+  )
+```
+
+### either
+
+```scala
+val asEither: USTM[Either[String, Int]] = 
+  ZSTM.fail("error").either
+// Result: Left("error")
+```
+
+## Sequential Composition
+
+### `zipLeft` (`<*`) Operator
+
+```scala
+// Run both, keep left result
+val keepFirst: USTM[Int] = 
+  ZSTM.succeed(1) <* ZSTM.succeed(2)
+// Result: 1
+```
+
+### zipRight (*>)
+
+```scala
+// Run both, keep right result
+val keepSecond: USTM[Int] = 
+  ZSTM.succeed(1) *> ZSTM.succeed(2)
+// Result: 2
+```
+
+## Collection Operations
+
+### foreach
+
+```scala
+import zio.stm._
+
+val updateAll: USTM[List[Unit]] = 
+  ZSTM.foreach(List(1, 2, 3)) { n =>
+    TRef.make(n).flatMap(_.update(_ * 2))
+  }
+```
+
+### foreachDiscard
+
+```scala
+val updateAllDiscard: USTM[Unit] = 
+  ZSTM.foreachDiscard(List(1, 2, 3)) { n =>
+    ZSTM.succeed(println(s"Processing $n"))
+  }
+```
+
+### collectAll
+
+```scala
+val gathered: USTM[List[Int]] = 
+  ZSTM.collectAll(List(
+    ZSTM.succeed(1),
+    ZSTM.succeed(2),
+    ZSTM.succeed(3)
+  ))
+```
+
+### foldLeft
+
+```scala
+val summed: USTM[Int] = 
+  ZSTM.foldLeft(List(1, 2, 3))(0) { (sum, n) =>
+    ZSTM.succeed(sum + n)
+  }
+```
+
+## Conditional Execution
+
+### when
+
+```scala
+val conditional: USTM[Option[Unit]] = 
+  ZSTM.when(true) {
+    ZSTM.succeed(println("Executed"))
+  }
+```
+
+### unless
+
+```scala
+val inverted: USTM[Option[Unit]] = 
+  ZSTM.unless(false) {
+    ZSTM.succeed(println("Executed"))
+  }
+```
+
+### ifSTM
+
+```scala
+val branching: USTM[String] = 
+  ZSTM.ifSTM(ZSTM.succeed(true))(
+    onTrue = ZSTM.succeed("yes"),
+    onFalse = ZSTM.succeed("no")
+  )
+```
+
+## Filtering
+
+### retryUntil
+
+```scala
+import zio._
+import zio.stm._
+
+// Retry until value satisfies predicate
+val program: UIO[Int] = for {
+  ref <- TRef.makeCommit(0)
+  fiber <- ref.update(_ + 1).commit.repeat(Schedule.spaced(100.millis)).fork
+  value <- ref.get.retryUntil(_ >= 5).commit
+  _ <- fiber.interrupt
+} yield value
+```
+
+### retryWhile
+
+```scala
+// Retry while value satisfies predicate
+val waitNegative: TRef[Int] => STM[Nothing, Int] = ref =>
+  ref.get.retryWhile(_ >= 0)
+```
+
+### filterOrFail
+
+```scala
+val validated: STM[String, Int] = 
+  ZSTM.succeed(42)
+    .filterOrFail(_ > 0)("Must be positive")
+```
+
+## Iteration
+
+### iterate
+
+```scala
+// Iterate until condition is met
+val factorial: USTM[Int] = 
+  ZSTM.iterate((1, 1)) { case (n, acc) => n <= 5 } {
+    case (n, acc) => ZSTM.succeed((n + 1, acc * n))
+  }.map(_._2)
+```
+
+### loop
+
+```scala
+// Loop and collect results
+val powers: USTM[List[Int]] = 
+  ZSTM.loop(1)(_ <= 4, _ + 1) { n =>
+    ZSTM.succeed(n * n)
+  }
+// Result: List(1, 4, 9, 16)
+```
+
+## Resource Management
+
+### ensuring
+
+```scala
+import zio.stm._
+
+val withFinalization: STM[String, Int] = 
+  TRef.make(0)
+    .flatMap(_.updateAndGet(_ + 1))
+    .ensuring(ZSTM.succeed(println("Cleanup")))
+```
+
+### acquireReleaseWith
+
+```scala
+import zio._
+import zio.stm._
+
+val managed: ZIO[Any, String, String] = 
+  ZSTM.acquireReleaseWith(
+    acquire = TRef.make("resource")
+  )(
+    release = ref => ref.set("cleaned").commit
+  )(
+    use = ref => ref.get.commit
+  )
+```
+
+## Advanced Patterns
+
+### Validation
+
+```scala
+import zio.stm._
+
+// Validate all elements
+val validated: STM[::[String], List[Int]] = 
+  ZSTM.validate(List(1, 2, -3)) { n =>
+    if (n > 0) ZSTM.succeed(n)
+    else ZSTM.fail(s"$n is not positive")
+  }
+```
+
+### Partition
+
+```scala
+// Separate successes and failures
+val partitioned: USTM[(List[String], List[Int])] = 
+  ZSTM.partition(List(1, 2, 3)) { n =>
+    if (n % 2 == 0) ZSTM.succeed(n)
+    else ZSTM.fail(s"$n is odd")
+  }
+```
+
+### Merge
+
+```scala
+// Merge error and success channels
+val merged: USTM[Int] = 
+  ZSTM.fail(404).merge  // Treats error as success
+```
+
+## Environment Access
+
+### environment
+
+```scala
+val env: URSTM[String, ZEnvironment[String]] = 
+  ZSTM.environment[String]
+```
+
+### environmentWith
+
+```scala
+val fromEnv: URSTM[String, Int] = 
+  ZSTM.environmentWith[String](_.get[String].length)
+```
+
+### provideEnvironment
+
+```scala
+val provided: STM[Nothing, Int] = 
+  ZSTM.environmentWith[String](_.get[String].length)
+    .provideEnvironment(ZEnvironment("hello"))
+```
+
+## Operators Summary
+
+| Operator | Description | Example |
+|----------|-------------|----------|
+| `*>` | Sequential, keep right | `a *> b` |
+| `<*` | Sequential, keep left | `a <* b` |
+| `<*>` | Sequential, zip both | `a <*> b` |
+| `<>` | Alternative on failure/retry | `a <> b` |
+| `<\|>` | Alternative on retry only | `a <\|> b` |
+| `<+>` | Alternative as Either | `a <+> b` |
+
+## Best Practices
+
+<Tip>
+**Keep Transactions Pure**
+
+STM transactions may execute multiple times due to retries. Never perform side effects inside transactions.
+</Tip>
+
+<Warning>
+**Avoid Long Transactions**
+
+Long-running transactions increase the likelihood of conflicts and retries. Keep transactions focused and short.
+</Warning>
+
+### Good Example
+
+```scala
+import zio._
+import zio.stm._
+
+val good: UIO[Int] = for {
+  ref <- TRef.makeCommit(0)
+  // Pure transaction
+  value <- STM.atomically {
+    ref.updateAndGet(_ + 1)
+  }
+  // Side effects outside
+  _ <- Console.printLine(s"Value: $value")
+} yield value
+```
+
+### Bad Example
+
+```scala
+// DON'T DO THIS
+val bad: UIO[Int] = for {
+  ref <- TRef.makeCommit(0)
+  value <- STM.atomically {
+    for {
+      v <- ref.updateAndGet(_ + 1)
+      // Side effect in transaction - will run multiple times!
+      _ <- ZSTM.succeed(println(s"Value: $v"))
+    } yield v
+  }
+} yield value
+```
+
+## See Also
+
+- [STM Overview](/stm/overview) - Introduction to STM concepts
+- [TRef](/stm/tref) - Transactional references
+- [TQueue](/stm/tqueue) - Transactional queues

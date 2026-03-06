@@ -1,0 +1,443 @@
+---
+title: ZStream
+description: A ZStream is a lazy, concurrent, asynchronous source of values
+---
+
+## Overview
+
+`ZStream[R, E, A]` is a description of a program that, when evaluated, may emit zero or more values of type `A`, may fail with errors of type `E`, and requires an environment of type `R` to run.
+
+Streams are:
+- **Lazy**: They don't execute until explicitly run
+- **Concurrent**: Multiple streams can run in parallel
+- **Asynchronous**: Operations are non-blocking
+- **Resource-safe**: Automatic cleanup of resources
+
+## Type Parameters
+
+<ParamField path="R" type="type">
+  Environment required to run the stream
+</ParamField>
+
+<ParamField path="E" type="type">
+  Error type the stream may fail with
+</ParamField>
+
+<ParamField path="A" type="type">
+  Type of elements emitted by the stream
+</ParamField>
+
+## Creating Streams
+
+### From Values
+
+```scala
+import zio._
+import zio.stream._
+
+// Single value
+val single: ZStream[Any, Nothing, Int] = 
+  ZStream(1)
+
+// Multiple values
+val multiple: ZStream[Any, Nothing, Int] = 
+  ZStream(1, 2, 3, 4, 5)
+
+// From a collection
+val fromList: ZStream[Any, Nothing, Int] = 
+  ZStream.fromIterable(List(1, 2, 3))
+
+// From a chunk
+val fromChunk: ZStream[Any, Nothing, String] = 
+  ZStream.fromChunk(Chunk("a", "b", "c"))
+```
+
+### From Effects
+
+```scala
+// From a ZIO effect
+val fromEffect: ZStream[Any, IOException, String] = 
+  ZStream.fromZIO(Console.readLine)
+
+// Repeat an effect
+val repeated: ZStream[Any, IOException, String] = 
+  ZStream.repeatZIO(Console.readLine)
+
+// Unfold from initial state
+val unfold: ZStream[Any, Nothing, Int] = 
+  ZStream.unfold(0)(n => 
+    if (n < 10) Some((n, n + 1))
+    else None
+  )
+```
+
+### Infinite Streams
+
+```scala
+// Infinite range
+val naturals: ZStream[Any, Nothing, Int] = 
+  ZStream.iterate(1)(_ + 1)
+
+// Repeat forever
+val forever: ZStream[Any, Nothing, Int] = 
+  ZStream(1, 2, 3).forever
+
+// Paginated data
+val paginated: ZStream[Any, Nothing, Chunk[User]] = 
+  ZStream.paginateZIO(0) { page =>
+    fetchPage(page).map { results =>
+      (results, if (results.isEmpty) None else Some(page + 1))
+    }
+  }
+```
+
+## Transforming Streams
+
+### Basic Transformations
+
+```scala
+val stream = ZStream(1, 2, 3, 4, 5)
+
+// Map elements
+stream.map(_ * 2)
+// ZStream(2, 4, 6, 8, 10)
+
+// Filter elements
+stream.filter(_ % 2 == 0)
+// ZStream(2, 4)
+
+// Collect with partial function
+stream.collect { case n if n % 2 == 0 => n * 10 }
+// ZStream(20, 40)
+
+// Drop elements
+stream.drop(2)
+// ZStream(3, 4, 5)
+
+// Take elements
+stream.take(3)
+// ZStream(1, 2, 3)
+```
+
+### Effectful Transformations
+
+```scala
+// Map with effect
+stream.mapZIO(n => 
+  Console.printLine(s"Processing: $n").as(n * 2)
+)
+
+// Parallel mapping
+stream.mapZIOPar(8)(n => 
+  computeHeavyOperation(n)
+)
+
+// Filter with effect
+stream.filterZIO(n => 
+  isValid(n)
+)
+```
+
+## Combining Streams
+
+### Concatenation
+
+```scala
+val s1 = ZStream(1, 2, 3)
+val s2 = ZStream(4, 5, 6)
+
+// Sequential concatenation
+val concat = s1 ++ s2
+// ZStream(1, 2, 3, 4, 5, 6)
+```
+
+### Merging
+
+```scala
+// Merge two streams concurrently
+val merged = s1.merge(s2)
+// Elements from both streams, order not guaranteed
+
+// Interleave deterministically
+val interleaved = s1.interleave(s2)
+// ZStream(1, 4, 2, 5, 3, 6)
+```
+
+### Zipping
+
+```scala
+val left = ZStream(1, 2, 3)
+val right = ZStream("a", "b", "c")
+
+// Zip into tuples
+left.zip(right)
+// ZStream((1,"a"), (2,"b"), (3,"c"))
+
+// Zip with function
+left.zipWith(right)((n, s) => s"$n:$s")
+// ZStream("1:a", "2:b", "3:c")
+
+// Zip with index
+ZStream("a", "b", "c").zipWithIndex
+// ZStream(("a",0), ("b",1), ("c",2))
+```
+
+## FlatMapping
+
+```scala
+val users = ZStream("alice", "bob", "charlie")
+
+// FlatMap to another stream
+val emails = users.flatMap { user =>
+  ZStream.fromIterable(getUserEmails(user))
+}
+
+// Parallel flatMap
+val parallel = users.flatMapPar(4) { user =>
+  ZStream.fromZIO(fetchUserData(user))
+}
+```
+
+## Grouping and Batching
+
+```scala
+val stream = ZStream(1, 2, 3, 4, 5, 6, 7, 8, 9, 10)
+
+// Group into chunks
+stream.grouped(3)
+// ZStream(Chunk(1,2,3), Chunk(4,5,6), Chunk(7,8,9), Chunk(10))
+
+// Group by time window
+stream.groupedWithin(5, 1.second)
+// Chunks of up to 5 elements or within 1 second
+
+// Group by key
+val data = ZStream(("a", 1), ("b", 2), ("a", 3), ("b", 4))
+val grouped = data.groupByKey(_._1) { case (key, stream) =>
+  stream.map(_._2).runSum.map(sum => (key, sum))
+}
+// Process each group independently
+```
+
+## Error Handling
+
+```scala
+val failingStream: ZStream[Any, String, Int] = 
+  ZStream(1, 2) ++ ZStream.fail("error") ++ ZStream(3, 4)
+
+// Catch errors
+val recovered = failingStream.catchAll { error =>
+  ZStream(0) // Fallback stream
+}
+
+// Retry on failure
+val retried = failingStream.retry(Schedule.recurs(3))
+
+// Ignore errors
+val either = failingStream.either
+// ZStream(Right(1), Right(2), Left("error"))
+```
+
+## Resource Management
+
+```scala
+// Acquire and release resources
+val managedStream = ZStream.acquireReleaseWith(
+  ZIO.succeed(openFile("data.txt"))
+)(
+  file => ZIO.succeed(file.close())
+)(
+  file => ZStream.fromIterator(file.lines())
+)
+
+// Bracket pattern
+val bracketed = ZStream.bracket(
+  acquire = openConnection
+)(
+  release = conn => conn.close()
+).flatMap { conn =>
+  ZStream.fromIterator(conn.fetchData())
+}
+
+// Scoped resources
+val scoped = ZStream.scoped {
+  ZIO.acquireRelease(openResource)(_.close())
+}.flatMap { resource =>
+  ZStream.fromIterable(resource.data)
+}
+```
+
+## Running Streams
+
+### Running to Sinks
+
+```scala
+val stream = ZStream(1, 2, 3, 4, 5)
+
+// Collect all elements
+val collected: ZIO[Any, Nothing, Chunk[Int]] = 
+  stream.runCollect
+
+// Count elements
+val count: ZIO[Any, Nothing, Long] = 
+  stream.runCount
+
+// Sum elements
+val sum: ZIO[Any, Nothing, Int] = 
+  stream.runSum
+
+// Run with custom sink
+val result: ZIO[Any, Nothing, Int] = 
+  stream.run(ZSink.foldLeft(0)(_ + _))
+```
+
+### Side Effects
+
+```scala
+// Perform effect for each element
+stream.runForeach { n =>
+  Console.printLine(n)
+}
+
+// Drain (ignore results)
+stream.runDrain
+```
+
+## Advanced Operations
+
+### Buffering
+
+```scala
+val slow = ZStream.fromIterable(1 to 100)
+
+// Buffer elements
+val buffered = slow.buffer(16)
+
+// Buffer with strategy
+val dropping = slow.bufferDropping(16)
+val sliding = slow.bufferSliding(16)
+```
+
+### Throttling
+
+```scala
+// Throttle by rate
+stream.throttleShape(10, 1.second)
+// Max 10 elements per second
+
+// Enforce throttling (drop excess)
+stream.throttleEnforce(10, 1.second)
+```
+
+### Debouncing
+
+```scala
+val clicks: ZStream[Any, Nothing, Click] = ???
+
+// Only emit after 300ms of silence
+val debounced = clicks.debounce(300.millis)
+```
+
+### Broadcasting
+
+```scala
+val original = ZStream(1, 2, 3, 4, 5)
+
+// Create multiple consumers
+val broadcast: ZIO[Scope, Nothing, List[ZStream[Any, Nothing, Int]]] = 
+  original.broadcast(3, 16)
+
+ZIO.scoped {
+  broadcast.flatMap { streams =>
+    // Each stream gets all elements
+    ZIO.collectAllPar(
+      streams.map(_.runCollect)
+    )
+  }
+}
+```
+
+## Common Patterns
+
+### Pagination
+
+```scala
+def fetchAllPages(apiClient: ApiClient): ZStream[Any, Throwable, Item] = 
+  ZStream.paginateZIO(1) { pageNumber =>
+    apiClient.getPage(pageNumber).map { page =>
+      (
+        page.items,
+        if (page.hasMore) Some(pageNumber + 1) else None
+      )
+    }
+  }.flattenChunks
+```
+
+### Stream Processing Pipeline
+
+```scala
+val pipeline = 
+  ZStream.fromQueue(inputQueue)
+    .mapZIOPar(16)(processItem)
+    .filter(_.isValid)
+    .grouped(100)
+    .mapZIO(batch => writeBatch(batch))
+    .runDrain
+```
+
+### Streaming File Processing
+
+```scala
+import zio.stream._
+
+def processLargeFile(path: String): ZStream[Any, Throwable, Result] = 
+  ZStream.fromFile(Paths.get(path))
+    .via(ZPipeline.utf8Decode)
+    .via(ZPipeline.splitLines)
+    .filter(_.nonEmpty)
+    .map(parseLine)
+    .mapZIOPar(8)(enrichData)
+```
+
+## Operators Reference
+
+<CardGroup cols={2}>
+  <Card title="map" icon="arrow-right">
+    Transform each element
+  </Card>
+  <Card title="flatMap" icon="diagram-project">
+    Transform to streams and flatten
+  </Card>
+  <Card title="filter" icon="filter">
+    Keep elements matching predicate
+  </Card>
+  <Card title="take" icon="hand">
+    Take first n elements
+  </Card>
+  <Card title="drop" icon="trash">
+    Skip first n elements
+  </Card>
+  <Card title="collect" icon="box">
+    Filter and transform with partial function
+  </Card>
+  <Card title="zip" icon="link">
+    Combine two streams element-wise
+  </Card>
+  <Card title="merge" icon="code-merge">
+    Merge streams concurrently
+  </Card>
+</CardGroup>
+
+## See Also
+
+<CardGroup cols={2}>
+  <Card title="ZSink" href="/streaming/zsink" icon="sink">
+    Consume stream elements
+  </Card>
+  <Card title="ZPipeline" href="/streaming/zpipeline" icon="pipe">
+    Transform stream elements
+  </Card>
+  <Card title="ZChannel" href="/streaming/zchannel" icon="tower-broadcast">
+    Low-level streaming primitive
+  </Card>
+</CardGroup>

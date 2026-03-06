@@ -1,0 +1,463 @@
+---
+title: "Metrics"
+description: "Instrument your ZIO applications with built-in metrics for observability and monitoring"
+---
+
+# Metrics
+
+ZIO provides a powerful, type-safe metrics system for instrumenting applications. A `Metric[In, Out]` represents a concurrent metric that accepts updates of type `In` and aggregates them to a stateful value of type `Out`.
+
+## Overview
+
+ZIO supports five primitive metric types:
+
+1. **Counters** - Monotonically increasing values
+2. **Gauges** - Values that can increase or decrease
+3. **Histograms** - Distribution of values across buckets
+4. **Summaries** - Statistical summaries with quantiles
+5. **Frequencies** - Counts of categorical values
+
+All metrics are derived from these primitives through transformation and composition.
+
+<Note>
+Metrics in ZIO are zero-cost abstractions when not actively observed - they only allocate memory when polled for their values.
+</Note>
+
+## Counter Metrics
+
+Counters track monotonically increasing values:
+
+```scala
+import zio._
+import zio.metrics._
+
+val requestCount = Metric.counter("http_requests_total")
+
+val handleRequest = for {
+  _ <- requestCount.increment
+  result <- processRequest
+} yield result
+```
+
+### Counter Operations
+
+```scala
+val counter = Metric.counter("operations")
+
+// Increment by 1
+counter.increment
+
+// Increment by a specific value
+counter.incrementBy(5)
+
+// Update with a value
+counter.update(1.0)
+
+// Get current value
+counter.value
+```
+
+### Tracking Aspects
+
+```scala
+val requests = Metric.counter("requests")
+
+// Track all invocations
+val tracked = handleRequest @@ requests.trackAll(1)
+
+// Track successes
+val trackSuccess = operation @@ requests.trackSuccess
+
+// Track errors
+val trackError = riskyOp @@ requests.trackError
+```
+
+## Gauge Metrics
+
+Gauges represent values that can increase or decrease:
+
+```scala
+val queueSize = Metric.gauge("queue_size")
+
+for {
+  _ <- queueSize.increment          // Add 1
+  _ <- queueSize.incrementBy(5)     // Add 5
+  _ <- queueSize.decrement          // Subtract 1
+  _ <- queueSize.decrementBy(3)     // Subtract 3
+  _ <- queueSize.set(10)            // Set to 10
+  current <- queueSize.value
+} yield current
+```
+
+### Gauge Examples
+
+```scala
+// Track active connections
+val activeConnections = Metric.gauge("active_connections")
+
+val handleConnection = 
+  activeConnections.increment *>
+  processConnection.ensuring(
+    activeConnections.decrement
+  )
+
+// Track memory usage
+val memoryUsage = Metric.gauge("memory_bytes")
+
+val updateMemory = for {
+  runtime <- ZIO.runtime[Any]
+  memory  = runtime.fiberRefs.get(FiberRef.currentTime)
+  _       <- memoryUsage.set(getUsedMemory())
+} yield ()
+```
+
+## Histogram Metrics
+
+Histograms track distributions of values across configurable buckets:
+
+```scala
+import zio.metrics.MetricKeyType.Histogram
+
+val requestDuration = Metric.histogram(
+  "http_request_duration_seconds",
+  Histogram.Boundaries.exponential(0.001, 2.0, 20)
+)
+
+val timedRequest = 
+  processRequest @@ requestDuration.trackDuration
+```
+
+### Histogram Boundaries
+
+```scala
+import Histogram.Boundaries
+
+// Linear boundaries: 0, 10, 20, 30, ..., 100
+val linear = Boundaries.linear(0, 10, 10)
+
+// Exponential boundaries: 1, 2, 4, 8, ...
+val exponential = Boundaries.exponential(1, 2, 10)
+
+// Custom boundaries
+val custom = Boundaries.fromChunk(
+  Chunk(0.1, 0.5, 1.0, 5.0, 10.0, 30.0)
+)
+```
+
+### Timer Metrics
+
+Specialized histograms for timing:
+
+```scala
+import java.time.temporal.ChronoUnit
+
+val apiLatency = Metric.timer(
+  "api_latency",
+  ChronoUnit.MILLIS
+)
+
+val timedAPI = callAPI @@ apiLatency.trackDuration
+```
+
+## Summary Metrics
+
+Summaries compute quantiles over sliding windows:
+
+```scala
+val responseSummary = Metric.summary(
+  name = "response_size_bytes",
+  maxAge = 1.minute,
+  maxSize = 1000,
+  error = 0.01,
+  quantiles = Chunk(0.5, 0.9, 0.99)
+)
+
+for {
+  size <- computeResponseSize
+  _    <- responseSummary.update(size)
+  summary <- responseSummary.value
+  _    <- Console.printLine(s"p50: ${summary.quantiles.get(0.5)}")
+} yield ()
+```
+
+### Summary Configuration
+
+- **maxAge** - Maximum age of samples in the sliding window
+- **maxSize** - Maximum number of samples to retain
+- **error** - Acceptable error margin for quantile estimation
+- **quantiles** - Which quantiles to compute (0.5 = median, 0.99 = 99th percentile)
+
+## Frequency Metrics
+
+Frequencies count occurrences of categorical values:
+
+```scala
+val errorTypes = Metric.frequency("error_types")
+
+val trackError = for {
+  error <- attemptOperation.either
+  _ <- error match {
+    case Left(e: TimeoutException) => 
+      errorTypes.update("timeout")
+    case Left(e: IOException) => 
+      errorTypes.update("io_error")
+    case Left(e) => 
+      errorTypes.update("unknown")
+    case Right(_) => 
+      ZIO.unit
+  }
+} yield error
+```
+
+## Metric Labels
+
+Add dimensions to metrics with labels:
+
+```scala
+val requests = Metric.counter("http_requests")
+
+// Static labels
+val getRequests = requests.tagged("method", "GET")
+val postRequests = requests.tagged("method", "POST")
+
+// Multiple labels
+val apiRequests = requests.tagged(
+  MetricLabel("service", "api"),
+  MetricLabel("region", "us-east-1")
+)
+
+// Dynamic labels from input
+val dynamicRequests = requests.taggedWith[String] { method =>
+  Set(MetricLabel("method", method))
+}
+```
+
+### Using Fiber Refs for Labels
+
+```scala
+import zio.metrics.MetricLabel
+
+val withLabels = for {
+  _ <- FiberRef.currentTags.update(_ + MetricLabel("user", "alice"))
+  _ <- requestCount.increment // Automatically tagged with user=alice
+} yield ()
+```
+
+## Runtime Metrics
+
+ZIO automatically collects runtime metrics:
+
+```scala
+import zio.metrics.Metric.runtime._
+
+// Built-in metrics
+val fiberMetrics = for {
+  started   <- fibersStarted.value
+  successes <- fiberSuccesses.value
+  failures  <- fiberFailures.value
+  _         <- Console.printLine(s"Fibers: $started / $successes / $failures")
+} yield ()
+```
+
+Available runtime metrics:
+
+- `fibersStarted` - Total fibers created
+- `fiberSuccesses` - Fibers that completed successfully  
+- `fiberFailures` - Fibers that failed
+- `fiberLifetimes` - Histogram of fiber execution times
+- `fiberFailureCauses` - Frequency table of failure causes
+- `fiberForkLocations` - Frequency table of fork locations
+
+## Metric Composition
+
+Combine metrics for coordinated updates:
+
+```scala
+val requestMetrics = 
+  requestCount.contramap[Request](_ => 1) zip
+  requestDuration.contramap[Request](_.duration)
+
+val tracked = handleRequest @@ requestMetrics.trackSuccess
+```
+
+## Polling Metrics
+
+Periodically sample external state:
+
+```scala
+import zio.metrics.PollingMetric
+
+val cpuUsage = PollingMetric(
+  Metric.gauge("cpu_usage"),
+  ZIO.attempt(getCPUUsage())
+)
+
+val enablePolling = 
+  cpuUsage.launch(1.second)
+```
+
+## Practical Examples
+
+### HTTP Service Metrics
+
+```scala
+import zio._
+import zio.metrics._
+
+case class Metrics(
+  requests: Metric.Counter[Long],
+  errors: Metric.Counter[Long],
+  duration: Metric.Histogram[Double]
+)
+
+object Metrics {
+  val live: ULayer[Metrics] = ZLayer.succeed(
+    Metrics(
+      Metric.counter("http_requests_total"),
+      Metric.counter("http_errors_total"),
+      Metric.histogram(
+        "http_request_duration_seconds",
+        Histogram.Boundaries.exponential(0.001, 2.0, 20)
+      )
+    )
+  )
+}
+
+def handleRequest(
+  request: Request
+): ZIO[Metrics, Throwable, Response] = {
+  for {
+    metrics  <- ZIO.service[Metrics]
+    response <- processRequest(request)
+                  .tapError(_ => metrics.errors.increment)
+                  @@ metrics.requests.trackAll(1)
+                  @@ metrics.duration.trackDuration
+  } yield response
+}
+```
+
+### Database Pool Monitoring
+
+```scala
+case class PoolMetrics(
+  activeConnections: Metric.Gauge[Double],
+  waitTime: Metric.Histogram[Double],
+  checkouts: Metric.Counter[Long]
+)
+
+def acquireConnection(
+  pool: ConnectionPool,
+  metrics: PoolMetrics
+): ZIO[Any, Throwable, Connection] = {
+  for {
+    _    <- metrics.activeConnections.increment
+    _    <- metrics.checkouts.increment
+    conn <- pool.acquire @@ metrics.waitTime.trackDuration
+  } yield conn
+}.ensuring(
+  metrics.activeConnections.decrement
+)
+```
+
+### Cache Performance Metrics
+
+```scala
+case class CacheMetrics(
+  hits: Metric.Counter[Long],
+  misses: Metric.Counter[Long],
+  evictions: Metric.Counter[Long],
+  size: Metric.Gauge[Double]
+) {
+  def hitRate: UIO[Double] = for {
+    h <- hits.value
+    m <- misses.value
+  } yield h / (h + m).toDouble
+}
+
+def cacheGet[K, V](
+  cache: Cache[K, V],
+  key: K,
+  metrics: CacheMetrics
+): UIO[Option[V]] = {
+  cache.get(key).flatMap {
+    case Some(value) => 
+      metrics.hits.increment.as(Some(value))
+    case None => 
+      metrics.misses.increment.as(None)
+  }
+}
+```
+
+### Business Metrics
+
+```scala
+case class BusinessMetrics(
+  orders: Metric.Counter[Long],
+  revenue: Metric.Counter[Double],
+  orderValue: Metric.Histogram[Double],
+  products: Metric.Frequency[String]
+)
+
+def processOrder(
+  order: Order,
+  metrics: BusinessMetrics
+): ZIO[Any, Throwable, Receipt] = {
+  for {
+    _       <- metrics.orders.increment
+    _       <- metrics.revenue.incrementBy(order.total)
+    _       <- metrics.orderValue.update(order.total)
+    _       <- ZIO.foreachDiscard(order.items) { item =>
+                 metrics.products.update(item.sku)
+               }
+    receipt <- fulfillOrder(order)
+  } yield receipt
+}
+```
+
+## Exporting Metrics
+
+Integrate with monitoring systems:
+
+```scala
+import zio.metrics._
+
+val exportMetrics = for {
+  snapshot <- Metrics.dump
+  formatted <- Metrics.prettyPrint
+  _ <- Console.printLine(formatted)
+} yield snapshot
+```
+
+## Best Practices
+
+<CardGroup cols={2}>
+  <Card title="Meaningful Names" icon="tag">
+    Use descriptive metric names following conventions (e.g., `http_requests_total`).
+  </Card>
+  
+  <Card title="Consistent Labels" icon="tags">
+    Use consistent label names across related metrics.
+  </Card>
+  
+  <Card title="Appropriate Types" icon="chart-line">
+    Choose the right metric type for your use case.
+  </Card>
+  
+  <Card title="Cardinality" icon="warning">
+    Avoid high-cardinality labels (e.g., user IDs) to prevent memory issues.
+  </Card>
+</CardGroup>
+
+## Performance Considerations
+
+- Metrics have minimal overhead when not observed
+- Histograms and summaries are more expensive than counters and gauges
+- Use appropriate bucket sizes for histograms
+- Summary quantiles require computation on each query
+- Polling metrics add background fiber overhead
+
+## See Also
+
+- [Observability](/observability/tracing) - Distributed tracing in ZIO
+- [Supervisor](/advanced/supervisor) - Monitoring fiber execution
+- API Reference: `Metric.scala:45`

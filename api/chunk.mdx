@@ -1,0 +1,197 @@
+---
+title: Chunk[A]
+description: API reference for ZIO's Chunk immutable array
+---
+
+## Overview
+
+A `Chunk[A]` represents a chunk of values of type `A`. Chunks are usually backed by arrays, but expose a purely functional, safe interface to the underlying elements. They become lazy on operations that would be costly with arrays, such as repeated concatenation.
+
+Chunks do not box primitive types for performance reasons.
+
+## Type Signature
+
+```scala
+sealed abstract class Chunk[+A] extends ChunkLike[A] with Serializable
+```
+
+## Constructors
+
+### apply
+
+Creates a chunk from a number of values.
+
+```scala
+def apply[A](as: A*): Chunk[A]
+```
+
+<ParamField path="as" type="A*">
+  Variable number of elements to include in the chunk
+</ParamField>
+
+### empty
+
+Returns the empty chunk.
+
+```scala
+def empty[A]: Chunk[A]
+```
+
+### single
+
+Returns a singleton chunk, eagerly evaluated.
+
+```scala
+def single[A](a: A): Chunk[A]
+```
+
+<ParamField path="a" type="A">
+  The element to create a chunk from
+</ParamField>
+
+### fromArray
+
+Returns a chunk backed by an array.
+
+```scala
+def fromArray[A](array: Array[A]): Chunk[A]
+```
+
+<ParamField path="array" type="Array[A]">
+  The array to create a chunk from. Must not be mutated after creating the chunk.
+</ParamField>
+
+### fromIterable
+
+Returns a chunk backed by an iterable.
+
+```scala
+def fromIterable[A](it: Iterable[A]): Chunk[A]
+```
+
+<ParamField path="it" type="Iterable[A]">
+  The iterable to create a chunk from
+</ParamField>
+
+## Key Methods
+
+### ++
+
+Returns the concatenation of this chunk with the specified chunk.
+
+```scala
+final def ++[A1 >: A](that: Chunk[A1]): Chunk[A1]
+```
+
+### map
+
+Maps over the elements of the chunk.
+
+```scala
+override def map[B](f: A => B): Chunk[B]
+```
+
+### flatMap
+
+Flat maps over the elements of the chunk.
+
+```scala
+override def flatMap[B](f: A => Chunk[B]): Chunk[B]
+```
+
+### filter
+
+Returns a filtered subset of this chunk.
+
+```scala
+override def filter(f: A => Boolean): Chunk[A]
+```
+
+### foldLeft
+
+Folds over the elements in this chunk from the left.
+
+```scala
+override def foldLeft[S](s0: S)(f: (S, A) => S): S
+```
+
+### take
+
+Takes the first `n` elements of the chunk.
+
+```scala
+override def take(n: Int): Chunk[A]
+```
+
+### drop
+
+Drops the first `n` elements of the chunk.
+
+```scala
+override def drop(n: Int): Chunk[A]
+```
+
+### toArray
+
+Converts the chunk into an array.
+
+```scala
+override def toArray[A1 >: A: ClassTag]: Array[A1]
+```
+
+## Examples
+
+### Creating Chunks
+
+```scala
+import zio._
+
+// From values
+val chunk1 = Chunk(1, 2, 3, 4, 5)
+
+// Empty chunk
+val chunk2 = Chunk.empty[Int]
+
+// Single element
+val chunk3 = Chunk.single(42)
+
+// From an iterable
+val chunk4 = Chunk.fromIterable(List(1, 2, 3))
+```
+
+### Transforming Chunks
+
+```scala
+val numbers = Chunk(1, 2, 3, 4, 5)
+
+// Map
+val doubled = numbers.map(_ * 2)
+
+// Filter
+val evens = numbers.filter(_ % 2 == 0)
+
+// Fold
+val sum = numbers.foldLeft(0)(_ + _)
+
+// Concatenate
+val combined = Chunk(1, 2) ++ Chunk(3, 4)
+```
+
+### Working with Chunks
+
+```scala
+val chunk = Chunk(1, 2, 3, 4, 5)
+
+// Take/drop
+val first3 = chunk.take(3)  // Chunk(1, 2, 3)
+val last3 = chunk.takeRight(3)  // Chunk(3, 4, 5)
+val rest = chunk.drop(2)  // Chunk(3, 4, 5)
+
+// Access elements
+val head = chunk.head  // 1
+val headOption = chunk.headOption  // Some(1)
+
+// Size
+val size = chunk.length  // 5
+val empty = chunk.isEmpty  // false
+```

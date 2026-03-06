@@ -1,0 +1,102 @@
+---
+title: "Clock"
+description: "Time and scheduling service"
+---
+
+# Clock Service
+
+The `Clock` service provides access to time and scheduling operations in ZIO.
+
+## Methods
+
+### currentTime
+
+```scala
+def currentTime(unit: TimeUnit): UIO[Long]
+```
+
+Returns the current time in the specified time unit.
+
+```scala
+val millis: UIO[Long] = Clock.currentTime(TimeUnit.MILLISECONDS)
+```
+
+### currentDateTime
+
+```scala
+val currentDateTime: UIO[OffsetDateTime]
+```
+
+Returns the current date and time.
+
+```scala
+for {
+  now <- Clock.currentDateTime
+  _ <- Console.printLine(s"Current time: $now")
+} yield ()
+```
+
+### nanoTime
+
+```scala
+val nanoTime: UIO[Long]
+```
+
+Returns a monotonically increasing time value in nanoseconds, useful for measuring elapsed time.
+
+```scala
+for {
+  start <- Clock.nanoTime
+  _ <- expensiveOperation
+  end <- Clock.nanoTime
+  elapsed = (end - start) / 1000000 // milliseconds
+  _ <- Console.printLine(s"Operation took ${elapsed}ms")
+} yield ()
+```
+
+### sleep
+
+```scala
+def sleep(duration: Duration): UIO[Unit]
+```
+
+Sleeps for the specified duration.
+
+```scala
+val delayed: UIO[Unit] = 
+  Console.printLine("Starting...") *>
+  Clock.sleep(5.seconds) *>
+  Console.printLine("Done!")
+```
+
+## Usage
+
+```scala
+import zio._
+
+val program: ZIO[Any, IOException, Unit] =
+  for {
+    start <- Clock.currentDateTime
+    _ <- Console.printLine(s"Started at: $start")
+    _ <- Clock.sleep(1.second)
+    end <- Clock.currentDateTime
+    _ <- Console.printLine(s"Finished at: $end")
+  } yield ()
+```
+
+## Testing
+
+Use `TestClock` to control time in tests without actually waiting.
+
+```scala
+for {
+  fiber <- ZIO.sleep(1.hour).fork
+  _ <- TestClock.adjust(1.hour)
+  _ <- fiber.join
+} yield ()
+```
+
+## See Also
+
+- [TestClock](/testing/test-services) - Clock control in tests
+- [Schedule](/advanced/schedule) - Retry and repeat policies

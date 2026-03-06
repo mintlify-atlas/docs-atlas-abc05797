@@ -1,0 +1,295 @@
+---
+title: 'ZIO Effect'
+description: 'Understanding the core ZIO data type for effectful computation'
+icon: 'wand-magic-sparkles'
+---
+
+# ZIO Effect
+
+The `ZIO[R, E, A]` data type is the foundation of the ZIO library. It represents an immutable value that describes an asynchronous, concurrent workflow requiring an environment of type `R`, potentially failing with an error of type `E`, or succeeding with a value of type `A`.
+
+## Type Parameters
+
+The ZIO effect has three type parameters:
+
+```scala
+ZIO[R, E, A]
+```
+
+<ParamField path="R" type="type">
+  **Environment** - The dependencies required to execute the effect. Use `Any` when no dependencies are needed.
+</ParamField>
+
+<ParamField path="E" type="type">
+  **Error** - The type of error the effect can fail with. Use `Nothing` for effects that cannot fail.
+</ParamField>
+
+<ParamField path="A" type="type">
+  **Success** - The type of value the effect produces on success.
+</ParamField>
+
+## Type Aliases
+
+ZIO provides convenient type aliases for common combinations:
+
+```scala
+type UIO[+A]      = ZIO[Any, Nothing, A]    // Cannot fail, no requirements
+type Task[+A]     = ZIO[Any, Throwable, A]  // May fail with Throwable
+type RIO[-R, +A]  = ZIO[R, Throwable, A]    // Requires R, may fail with Throwable
+type IO[+E, +A]   = ZIO[Any, E, A]          // May fail with E
+type URIO[-R, +A] = ZIO[R, Nothing, A]      // Requires R, cannot fail
+```
+
+## Creating Effects
+
+### Pure Values
+
+Create effects from pure values using constructors:
+
+```scala
+import zio._
+
+// Succeed with a value
+val success: UIO[Int] = ZIO.succeed(42)
+
+// Fail with an error
+val failure: IO[String, Nothing] = ZIO.fail("Something went wrong")
+
+// Create from an Either
+val fromEither: IO[String, Int] = 
+  ZIO.fromEither(Right(42))
+
+// Create from an Option
+val fromOption: IO[Option[Nothing], Int] = 
+  ZIO.fromOption(Some(42))
+```
+
+### Side Effects
+
+Wrap side-effecting code safely:
+
+```scala
+// Suspend a side-effecting computation
+val effect: Task[Unit] = ZIO.attempt {
+  println("Hello, World!")
+}
+
+// Handle specific exception types
+val ioEffect: IO[IOException, String] = ZIO.attemptBlockingIO {
+  scala.io.Source.fromFile("data.txt").mkString
+}
+```
+
+<Warning>
+  Never execute side effects directly in ZIO code. Always wrap them in `ZIO.attempt` or similar constructors to maintain referential transparency.
+</Warning>
+
+### Async Effects
+
+Integrate callback-based APIs:
+
+```scala
+// Convert callback-style API to ZIO
+val async: Task[String] = ZIO.async { callback =>
+  someAsyncAPI { result =>
+    callback(ZIO.succeed(result))
+  }
+}
+
+// With interruption support
+val asyncInterrupt: Task[String] = ZIO.asyncInterrupt { callback =>
+  val handle = someAsyncAPI { result =>
+    callback(ZIO.succeed(result))
+  }
+  
+  // Return cleanup action
+  Left(ZIO.succeed(handle.cancel()))
+}
+```
+
+### From Futures
+
+Convert Scala Futures to ZIO effects:
+
+```scala
+import scala.concurrent.{ExecutionContext, Future}
+
+val fromFuture: Task[String] = ZIO.fromFuture { implicit ec =>
+  Future {
+    // Future computation
+    "result"
+  }
+}
+```
+
+## Effect Operations
+
+### Mapping
+
+Transform success values:
+
+```scala
+val mapped: UIO[String] = ZIO.succeed(42).map(n => s"The answer is $n")
+```
+
+### Flat Mapping
+
+Chain dependent effects:
+
+```scala
+val chained: Task[Unit] = 
+  for {
+    name <- Console.readLine
+    _    <- Console.printLine(s"Hello, $name!")
+  } yield ()
+```
+
+### Error Handling
+
+Recover from errors:
+
+```scala
+val recovered: IO[Nothing, Int] = 
+  ZIO.fail("error")
+    .catchAll(_ => ZIO.succeed(0))
+
+// Catch specific errors
+val specific: Task[String] = 
+  readFile("data.txt")
+    .catchSome {
+      case _: FileNotFoundException => ZIO.succeed("default content")
+    }
+```
+
+### Parallel Execution
+
+Run effects in parallel:
+
+```scala
+// Zip two effects in parallel
+val parallel: UIO[(Int, String)] = 
+  ZIO.succeed(42).zipPar(ZIO.succeed("hello"))
+
+// Run multiple effects in parallel
+val all: UIO[List[Int]] = 
+  ZIO.collectAllPar(List(
+    ZIO.succeed(1),
+    ZIO.succeed(2),
+    ZIO.succeed(3)
+  ))
+```
+
+### Timing and Delays
+
+Control timing of effects:
+
+```scala
+// Delay execution
+val delayed: UIO[Int] = 
+  ZIO.succeed(42).delay(5.seconds)
+
+// Timeout an effect
+val withTimeout: UIO[Option[String]] = 
+  longRunningEffect.timeout(10.seconds)
+
+// Measure execution time
+val timed: UIO[(Duration, String)] = 
+  someEffect.timed
+```
+
+## Sequencing Operators
+
+ZIO provides symbolic operators for common patterns:
+
+```scala
+// Sequential composition
+val seq = effect1 *> effect2  // Run both, keep second result
+val seq2 = effect1 <* effect2 // Run both, keep first result
+
+// Parallel composition  
+val par = effect1 <&> effect2  // Run in parallel, keep both results
+val par2 = effect1 &> effect2  // Run in parallel, keep second result
+
+// Error handling
+val fallback = effect1 <> effect2  // Try first, fallback to second on failure
+```
+
+## Mental Model
+
+Think of `ZIO[R, E, A]` as a function:
+
+```scala
+ZEnvironment[R] => Either[E, A]
+```
+
+However, ZIO effects are:
+
+<CardGroup cols={2}>
+  <Card title="Immutable" icon="snowflake">
+    Effects are immutable values that can be safely shared and reused
+  </Card>
+  <Card title="Lazy" icon="clock">
+    Effects describe computations but don't execute until explicitly run
+  </Card>
+  <Card title="Compositional" icon="layer-group">
+    Effects can be combined using operators to build complex workflows
+  </Card>
+  <Card title="Type-Safe" icon="shield-check">
+    The type system tracks requirements, errors, and success types
+  </Card>
+</CardGroup>
+
+## Best Practices
+
+<Tip>
+  **Use specific error types** instead of `Throwable` when possible. This makes error handling more precise and enables better compile-time checking.
+</Tip>
+
+<Tip>
+  **Keep effects pure**. All side effects should be wrapped in appropriate constructors like `ZIO.attempt` or `ZIO.succeed`.
+</Tip>
+
+<Tip>
+  **Use for-comprehensions** for sequential composition. They provide cleaner syntax than explicit `flatMap` calls.
+</Tip>
+
+## Reference
+
+From the source code (`ZIO.scala:32-54`):
+
+```scala
+/**
+ * A `ZIO[R, E, A]` value is an immutable value (called an "effect") that
+ * describes an async, concurrent workflow. In order to be executed, the
+ * workflow requires a value of type `ZEnvironment[R]`, and when executed, the
+ * workflow will either produce a failure of type `E`, or a success of type `A`.
+ *
+ * ZIO effects model resourceful interaction with the outside world, including
+ * synchronous, asynchronous, concurrent, and parallel interaction.
+ *
+ * The async and concurrent operations of ZIO effects are powered by fibers,
+ * which are lightweight, green threads that enable high scalability.
+ *
+ * To run an effect, you need a `Runtime`, which is capable of executing
+ * effects. Runtimes bundle a thread pool together with the environment that
+ * effects need.
+ */
+sealed trait ZIO[-R, +E, +A]
+```
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Fibers" icon="network-wired" href="/core/fibers">
+    Learn about ZIO's lightweight concurrency model
+  </Card>
+  <Card title="Error Handling" icon="triangle-exclamation" href="/core/error-handling">
+    Master error handling patterns in ZIO
+  </Card>
+  <Card title="Resource Management" icon="box-archive" href="/core/resource-management">
+    Manage resources safely with scopes
+  </Card>
+  <Card title="Runtime" icon="gears" href="/core/runtime">
+    Understand how to execute ZIO effects
+  </Card>
+</CardGroup>

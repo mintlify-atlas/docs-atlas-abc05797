@@ -1,0 +1,261 @@
+---
+title: 'ZIO HTTP'
+description: 'Build type-safe HTTP applications with ZIO HTTP, a high-performance HTTP library built for ZIO.'
+keywords: ['zio', 'http', 'server', 'client', 'web', 'api', 'rest']
+---
+
+ZIO HTTP is a powerful HTTP library built on top of ZIO that provides a type-safe, functional approach to building HTTP servers and clients. It offers excellent performance, composability, and seamless integration with the ZIO ecosystem.
+
+## Installation
+
+Add ZIO HTTP to your `build.sbt`:
+
+```scala build.sbt
+libraryDependencies += "dev.zio" %% "zio-http" % "3.4.0"
+```
+
+## Core Concepts
+
+### HTTP Server
+
+ZIO HTTP provides a simple yet powerful API for building HTTP servers with route handling, middleware, and WebSocket support.
+
+### Routes and Handlers
+
+Routes are defined using pattern matching on HTTP methods and paths:
+
+```scala
+import zio._
+import zio.http._
+
+val routes = Routes(
+  Method.GET / "hello" -> handler(Response.text("Hello, World!")),
+  Method.GET / "user" / int("id") -> handler { (id: Int, req: Request) =>
+    Response.text(s"User ID: $id")
+  }
+)
+```
+
+## Building an HTTP Server
+
+### Basic Server Example
+
+Here's a complete example of a simple HTTP server:
+
+```scala
+import zio._
+import zio.http._
+
+object SimpleHttpServer extends ZIOAppDefault {
+  val app = Routes(
+    Method.GET / "api" / "users" -> handler {
+      Response.json("""{"users": ["Alice", "Bob", "Charlie"]}""")
+    },
+    Method.POST / "api" / "users" -> handler { (req: Request) =>
+      for {
+        body <- req.body.asString
+        _    <- Console.printLine(s"Received: $body")
+      } yield Response.text("User created").status(Status.Created)
+    }
+  )
+
+  override def run = Server.serve(app).provide(Server.default)
+}
+```
+
+<Info>
+The default server runs on port 8080. You can customize the port and other settings using `Server.Config`.
+</Info>
+
+### Server with Metrics
+
+Integrate Prometheus metrics with your HTTP server:
+
+```scala
+import zio._
+import zio.http._
+import zio.metrics.Metric
+import zio.metrics.connectors.prometheus.PrometheusPublisher
+import zio.metrics.connectors.{MetricsConfig, prometheus}
+
+object MetricAppExample extends ZIOAppDefault {
+  def memoryUsage: ZIO[Any, Nothing, Double] = {
+    import java.lang.Runtime._
+    ZIO
+      .succeed(getRuntime.totalMemory() - getRuntime.freeMemory())
+      .map(_ / (1024.0 * 1024.0)) @@ Metric.gauge("memory_usage")
+  }
+
+  private val httpApp =
+    Routes(
+      Method.GET / "metrics" ->
+        handler(ZIO.serviceWithZIO[PrometheusPublisher](_.get.map(Response.text))),
+      Method.GET / "foo" -> handler {
+        for {
+          _    <- memoryUsage
+          time <- Clock.currentDateTime
+        } yield Response.text(s"$time\t/foo API called")
+      }
+    )
+
+  override def run = Server
+    .serve(httpApp)
+    .provide(
+      Server.default,
+      prometheus.prometheusLayer,
+      prometheus.publisherLayer,
+      ZLayer.succeed(MetricsConfig(5.seconds))
+    )
+}
+```
+
+## HTTP Client
+
+ZIO HTTP also provides a powerful HTTP client for making requests:
+
+```scala
+import zio._
+import zio.http._
+
+object HttpClientExample extends ZIOAppDefault {
+  val program = for {
+    client   <- ZIO.service[Client]
+    response <- client.url(URL.decode("https://api.github.com/users/zio").toOption.get).get("")
+    body     <- response.body.asString
+    _        <- Console.printLine(body)
+  } yield ()
+
+  override def run = program.provide(Client.default)
+}
+```
+
+## Middleware
+
+Add cross-cutting concerns like logging, authentication, and CORS:
+
+```scala
+import zio.http._
+
+val loggingMiddleware = Middleware.intercept { req =>
+  for {
+    _        <- Console.printLine(s"${req.method} ${req.path}")
+    response <- ZIO.succeed(Response.text("OK"))
+  } yield response
+}
+
+val routes = Routes(
+  Method.GET / "api" / "data" -> handler(Response.text("Data"))
+) @@ loggingMiddleware
+```
+
+## WebSockets
+
+ZIO HTTP provides first-class support for WebSockets:
+
+```scala
+import zio._
+import zio.http._
+import zio.http.ChannelEvent._
+
+val socketApp = Handler.webSocket { channel =>
+  channel.receiveAll {
+    case Read(WebSocketFrame.Text(text)) =>
+      channel.send(Read(WebSocketFrame.text(s"Echo: $text")))
+    case _ =>
+      ZIO.unit
+  }
+}
+
+val routes = Routes(
+  Method.GET / "ws" -> handler(socketApp.toResponse)
+)
+```
+
+## Best Practices
+
+<AccordionGroup>
+  <Accordion title="Error Handling">
+    Use ZIO's error channel to handle errors gracefully:
+
+    ```scala
+    val routes = Routes(
+      Method.GET / "user" / int("id") -> handler { (id: Int, req: Request) =>
+        for {
+          user <- getUserById(id).mapError(e => Response.text(e.getMessage).status(Status.NotFound))
+        } yield Response.json(user.toJson)
+      }
+    )
+    ```
+  </Accordion>
+
+  <Accordion title="Resource Management">
+    Use `ZLayer` to manage server lifecycle and resources:
+
+    ```scala
+    val serverLayer = ZLayer.scoped {
+      ZIO.acquireRelease(
+        Console.printLine("Starting server...") *> ZIO.succeed("resource")
+      )(_ => Console.printLine("Shutting down server..."))
+    }
+    ```
+  </Accordion>
+
+  <Accordion title="Performance">
+    - Use streaming for large payloads
+    - Enable HTTP/2 for better performance
+    - Configure appropriate thread pools
+    - Implement caching strategies
+  </Accordion>
+</AccordionGroup>
+
+## Testing
+
+Test your HTTP applications using ZIO Test:
+
+```scala
+import zio.test._
+import zio.http._
+
+object HttpServerSpec extends ZIOSpecDefault {
+  def spec = suite("HttpServer")(
+    test("GET /hello returns 200") {
+      val routes = Routes(
+        Method.GET / "hello" -> handler(Response.text("Hello, World!"))
+      )
+      
+      for {
+        response <- routes.runZIO(Request.get(URL.decode("/hello").toOption.get))
+        body     <- response.body.asString
+      } yield assertTrue(
+        response.status == Status.Ok,
+        body == "Hello, World!"
+      )
+    }
+  )
+}
+```
+
+## Additional Resources
+
+<CardGroup cols={2}>
+  <Card title="ZIO HTTP Documentation" icon="book" href="https://zio.dev/zio-http/">
+    Official ZIO HTTP documentation and guides
+  </Card>
+  <Card title="GitHub Repository" icon="github" href="https://github.com/zio/zio-http">
+    Source code, examples, and issue tracker
+  </Card>
+</CardGroup>
+
+## Next Steps
+
+<Steps>
+  <Step title="Explore Advanced Features">
+    Learn about middleware composition, custom protocols, and performance tuning.
+  </Step>
+  <Step title="Integrate with Other Libraries">
+    Combine ZIO HTTP with ZIO JSON for automatic serialization and ZIO Config for configuration management.
+  </Step>
+  <Step title="Deploy to Production">
+    Set up monitoring, logging, and deployment pipelines for your HTTP services.
+  </Step>
+</Steps>

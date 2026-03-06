@@ -1,97 +1,103 @@
 ---
-title: "Introduction"
-description: "Welcome to the new home for your documentation"
+title: "ZIO - Type-Safe Async & Concurrent Programming"
+description: "A composable library for async and concurrent programming in Scala"
 ---
 
-## Setting up
+# Welcome to ZIO
 
-Get your documentation site up and running in minutes.
+ZIO is a zero-dependency Scala library for asynchronous and concurrent programming. Powered by highly-scalable, non-blocking fibers that never waste or leak resources, ZIO lets you build scalable, resilient, and reactive applications that meet the needs of your business.
 
-<Card
-  title="Start here"
-  icon="rocket"
-  href="/quickstart"
-  horizontal
->
-  Follow our three step quickstart guide.
-</Card>
+## Why ZIO?
 
-## Make it yours
-
-Design a docs site that looks great and empowers your users.
-
-<Columns cols={2}>
-  <Card
-    title="Edit locally"
-    icon="pen-to-square"
-    href="/development"
-  >
-    Edit your docs locally and preview them in real time.
+<CardGroup cols={2}>
+  <Card title="High-Performance" icon="gauge-high">
+    Build scalable applications with minimal runtime overhead using lightweight fibers
   </Card>
-  <Card
-    title="Customize your site"
-    icon="palette"
-    href="/essentials/settings"
-  >
-    Customize the design and colors of your site to match your brand.
+  <Card title="Type-Safe" icon="shield-check">
+    Use the full power of the Scala compiler to catch bugs at compile time
   </Card>
-    <Card
-    title="Set up navigation"
-    icon="map"
-    href="/essentials/navigation"
-  >
-    Organize your docs to help users find what they need and succeed with your product.
+  <Card title="Concurrent" icon="arrows-split-up-and-left">
+    Easily build concurrent apps without deadlocks, race conditions, or complexity
   </Card>
-  <Card
-    title="API documentation"
-    icon="terminal"
-    href="/api-reference/introduction"
-  >
-    Auto-generate API documentation from OpenAPI specifications.
+  <Card title="Resource-Safe" icon="lock">
+    Build apps that never leak resources, even when they fail
   </Card>
-</Columns>
+</CardGroup>
 
-## Create beautiful pages
+## Get Started
 
-Everything you need to create world-class documentation.
+<CardGroup cols={2}>
+  <Card title="Quickstart" icon="rocket" href="/quickstart">
+    Get up and running with ZIO in minutes
+  </Card>
+  <Card title="Installation" icon="download" href="/installation">
+    Add ZIO to your Scala project
+  </Card>
+  <Card title="Core Concepts" icon="book-open" href="/core/zio-effect">
+    Learn the fundamental concepts behind ZIO
+  </Card>
+  <Card title="API Reference" icon="code" href="/api/zio">
+    Explore the complete API documentation
+  </Card>
+</CardGroup>
 
-<Columns cols={2}>
-  <Card
-    title="Write with MDX"
-    icon="pen-fancy"
-    href="/essentials/markdown"
-  >
-    Use MDX to style your docs pages.
-  </Card>
-  <Card
-    title="Code samples"
-    icon="code"
-    href="/essentials/code"
-  >
-    Add sample code to demonstrate how to use your product.
-  </Card>
-  <Card
-    title="Images"
-    icon="image"
-    href="/essentials/images"
-  >
-    Display images and other media.
-  </Card>
-  <Card
-    title="Reusable snippets"
-    icon="recycle"
-    href="/essentials/reusable-snippets"
-  >
-    Write once and reuse across your docs.
-  </Card>
-</Columns>
+## Key Features
 
-## Need inspiration?
+<AccordionGroup>
+  <Accordion title="Lightweight Fibers">
+    ZIO's fibers are green threads that are incredibly lightweight and efficient. You can spawn millions of fibers without worrying about system resources.
+  </Accordion>
+  <Accordion title="Composable Error Handling">
+    Handle errors with full type safety. ZIO's error channel lets you track what can go wrong and handle failures gracefully.
+  </Accordion>
+  <Accordion title="Built-in Dependency Injection">
+    Use ZLayer to manage dependencies in a type-safe, composable way without external DI frameworks.
+  </Accordion>
+  <Accordion title="Powerful Streaming">
+    Process infinite streams of data efficiently with ZStream, including backpressure and resource safety.
+  </Accordion>
+  <Accordion title="Software Transactional Memory">
+    Write lock-free concurrent programs using STM primitives like TRef, TMap, and TQueue.
+  </Accordion>
+  <Accordion title="Comprehensive Testing">
+    Test your ZIO applications with built-in test framework, property-based testing, and test services.
+  </Accordion>
+</AccordionGroup>
 
-<Card
-  title="See complete examples"
-  icon="stars"
-  href="https://mintlify.com/customers"
->
-  Browse our showcase of exceptional documentation sites.
-</Card>
+## Quick Example
+
+```scala example.scala
+import zio._
+
+object HelloWorld extends ZIOAppDefault {
+  def run = 
+    for {
+      _ <- Console.printLine("What is your name?")
+      name <- Console.readLine
+      _ <- Console.printLine(s"Hello, $name!")
+    } yield ()
+}
+```
+
+## Explore the Documentation
+
+<CardGroup cols={3}>
+  <Card title="Concurrency" icon="arrows-split-up-and-left" href="/concurrency/fibers">
+    Master concurrent programming with fibers, queues, and more
+  </Card>
+  <Card title="Streaming" icon="water" href="/streaming/zstream">
+    Process streams of data efficiently and safely
+  </Card>
+  <Card title="STM" icon="atom" href="/stm/overview">
+    Build lock-free concurrent programs with transactional memory
+  </Card>
+  <Card title="Testing" icon="flask" href="/testing/overview">
+    Test your applications with ZIO Test
+  </Card>
+  <Card title="Best Practices" icon="star" href="/guides/error-handling-patterns">
+    Learn patterns and best practices
+  </Card>
+  <Card title="Migration Guides" icon="right-left" href="/guides/migration/from-cats-effect">
+    Migrate from other effect systems
+  </Card>
+</CardGroup>

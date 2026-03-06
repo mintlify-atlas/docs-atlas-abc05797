@@ -1,0 +1,399 @@
+---
+title: 'CyclicBarrier'
+description: 'Reusable synchronization barrier for coordinating fibers'
+icon: 'arrows-to-circle'
+---
+
+## Overview
+
+`CyclicBarrier` is a synchronization aid that allows a set of fibers to all wait for each other to reach a common barrier point. The barrier is called "cyclic" because it can be re-used after the waiting fibers are released.
+
+## Key Characteristics
+
+- **Reusable**: Can be used multiple times (unlike CountdownLatch)
+- **Fixed party size**: All parties must arrive before releasing
+- **Optional action**: Can execute an action when all parties arrive
+- **Breakable**: Can be broken to release all waiters with a failure
+
+## Creating a CyclicBarrier
+
+### make (without action)
+
+Creates a new `CyclicBarrier` with the specified number of parties.
+
+```scala
+def make(parties: Int): UIO[CyclicBarrier]
+```
+
+**Parameters:**
+- `parties` - The number of fibers that must invoke `await` before the barrier is tripped
+
+**Example:**
+
+```scala
+import zio._
+import zio.concurrent._
+
+val program = for {
+  barrier <- CyclicBarrier.make(3)
+  // Use barrier for coordination
+} yield ()
+```
+
+### make (with action)
+
+Creates a new `CyclicBarrier` with an action that runs after the last party arrives.
+
+```scala
+def make(parties: Int, action: UIO[Any]): UIO[CyclicBarrier]
+```
+
+**Parameters:**
+- `parties` - The number of parties
+- `action` - Effect to run once per barrier trip, after the last fiber arrives but before any are released
+
+**Example:**
+
+```scala
+for {
+  counter <- Ref.make(0)
+  barrier <- CyclicBarrier.make(
+    parties = 3,
+    action = counter.update(_ + 1) *> 
+             Console.printLine("All parties arrived!")
+  )
+} yield barrier
+```
+
+## Operations
+
+### await
+
+Waits until all parties have invoked await on this barrier. Returns the arrival index (parties - 1 down to 0).
+
+```scala
+val await: IO[Unit, Int]
+```
+
+**Return Value:**
+- The arrival index: `parties - 1` for the first to arrive, down to `0` for the last
+
+**Failure:**
+- Fails with `Unit` if the barrier is broken
+
+**Example:**
+
+```scala
+for {
+  barrier <- CyclicBarrier.make(3)
+  
+  fiber1 <- (barrier.await *> Console.printLine("Fiber 1 released")).fork
+  fiber2 <- (barrier.await *> Console.printLine("Fiber 2 released")).fork
+  fiber3 <- (barrier.await *> Console.printLine("Fiber 3 released")).fork
+  
+  _ <- fiber1.join
+  _ <- fiber2.join
+  _ <- fiber3.join
+} yield ()
+```
+
+### reset
+
+Resets the barrier to its initial state. Breaks any currently waiting parties.
+
+```scala
+val reset: UIO[Unit]
+```
+
+**Behavior:**
+- Releases all currently waiting fibers with a failure
+- Resets the barrier to accept new parties
+- Unbreaks the barrier if it was broken
+
+**Example:**
+
+```scala
+for {
+  barrier <- CyclicBarrier.make(3)
+  fiber   <- barrier.await.fork
+  _       <- barrier.reset // Breaks the waiting fiber
+  result  <- fiber.await
+} yield result // Exit.Failure
+```
+
+### parties
+
+Returns the number of parties required to trip this barrier.
+
+```scala
+def parties: Int
+```
+
+**Example:**
+
+```scala
+for {
+  barrier <- CyclicBarrier.make(5)
+  n = barrier.parties
+} yield n // 5
+```
+
+### waiting
+
+Returns the number of parties currently waiting at the barrier.
+
+```scala
+val waiting: UIO[Int]
+```
+
+**Example:**
+
+```scala
+for {
+  barrier <- CyclicBarrier.make(3)
+  fiber   <- barrier.await.fork
+  w       <- barrier.waiting
+} yield w // 1
+```
+
+### isBroken
+
+Queries if this barrier is in a broken state.
+
+```scala
+val isBroken: UIO[Boolean]
+```
+
+**Example:**
+
+```scala
+for {
+  barrier <- CyclicBarrier.make(3)
+  fiber   <- barrier.await.fork
+  _       <- fiber.interrupt
+  broken  <- barrier.isBroken
+} yield broken // true
+```
+
+## Common Patterns
+
+### Iterative Computation
+
+Synchronize multiple fibers between iterations of a computation.
+
+```scala
+for {
+  barrier <- CyclicBarrier.make(3)
+  results <- Ref.make(Vector.empty[Int])
+  
+  worker = (id: Int) => 
+    ZIO.loop(1)(_ <= 5, _ + 1) { iteration =>
+      for {
+        result <- computePartialResult(id, iteration)
+        _      <- results.update(_ :+ result)
+        index  <- barrier.await
+        _      <- ZIO.when(index == 0) {
+          Console.printLine(s"Iteration $iteration complete")
+        }
+      } yield ()
+    }
+  
+  _ <- ZIO.foreachPar(1 to 3)(worker)
+} yield ()
+```
+
+### Parallel Algorithms
+
+Coordinate phases in parallel algorithms like parallel sorting or matrix operations.
+
+```scala
+def parallelMergeSort[A: Ordering](
+  array: Array[A],
+  workers: Int
+): Task[Array[A]] = for {
+  barrier <- CyclicBarrier.make(workers)
+  chunks = array.grouped(array.length / workers).toList
+  
+  _ <- ZIO.foreachPar(chunks) { chunk =>
+    for {
+      _ <- ZIO.succeed(sortChunk(chunk))
+      _ <- barrier.await
+      _ <- ZIO.succeed(mergeWithNeighbors(chunk))
+      _ <- barrier.await
+    } yield ()
+  }
+} yield array
+```
+
+### Simulation Steps
+
+Synchronize discrete time steps in simulations.
+
+```scala
+class Simulation(agents: List[Agent]) {
+  def run(steps: Int): Task[Unit] = for {
+    barrier <- CyclicBarrier.make(
+      parties = agents.length,
+      action = Console.printLine("Step completed")
+    )
+    
+    _ <- ZIO.foreachPar(agents) { agent =>
+      ZIO.loop(0)(_ < steps, _ + 1) { step =>
+        for {
+          _ <- agent.performAction(step)
+          _ <- barrier.await
+        } yield ()
+      }
+    }
+  } yield ()
+}
+```
+
+### Testing Race Conditions
+
+Create precise timing for testing concurrent scenarios.
+
+```scala
+test("concurrent access to shared resource") {
+  for {
+    barrier  <- CyclicBarrier.make(2)
+    resource <- Ref.make(0)
+    
+    fiber1 <- (barrier.await *> resource.update(_ + 1)).fork
+    fiber2 <- (barrier.await *> resource.update(_ + 1)).fork
+    
+    // Both fibers execute update simultaneously
+    _ <- fiber1.join
+    _ <- fiber2.join
+    
+    result <- resource.get
+  } yield assertTrue(result == 2)
+}
+```
+
+## Use Cases
+
+### Coordinated Game Loop
+
+```scala
+class GameServer(players: List[Player]) {
+  def runGameLoop: Task[Unit] = for {
+    barrier <- CyclicBarrier.make(
+      parties = players.length,
+      action = broadcastGameState
+    )
+    
+    _ <- ZIO.foreachPar(players) { player =>
+      ZIO.forever {
+        for {
+          action <- player.getAction
+          _      <- validateAndApply(action)
+          _      <- barrier.await
+        } yield ()
+      }
+    }
+  } yield ()
+}
+```
+
+### Data Processing Pipeline
+
+```scala
+def processInBatches[A, B](
+  items: List[A],
+  batchSize: Int,
+  workers: Int
+)(process: A => Task[B]): Task[List[B]] = for {
+  barrier <- CyclicBarrier.make(workers)
+  results <- Ref.make(List.empty[B])
+  
+  _ <- ZIO.foreachPar(items.grouped(batchSize).toList) { batch =>
+    for {
+      processed <- ZIO.foreach(batch)(process)
+      _         <- results.update(_ ++ processed)
+      _         <- barrier.await
+    } yield ()
+  }
+  
+  final <- results.get
+} yield final
+```
+
+## Breaking and Recovery
+
+### Handling Broken Barriers
+
+```scala
+for {
+  barrier <- CyclicBarrier.make(3)
+  
+  fiber1 <- barrier.await.fork
+  fiber2 <- barrier.await.fork
+  
+  // Interrupt one fiber
+  _ <- fiber1.interrupt
+  
+  // This will fail because barrier is broken
+  result <- fiber2.await
+  
+  // Check if broken
+  broken <- barrier.isBroken
+  
+  // Reset to use again
+  _ <- barrier.reset
+  
+  // Now can use normally
+  _ <- ZIO.foreachPar(1 to 3)(_ => barrier.await)
+} yield ()
+```
+
+## Comparison with CountdownLatch
+
+| Feature | CyclicBarrier | CountdownLatch |
+|---------|---------------|----------------|
+| **Reusable** | Yes | No |
+| **Parties** | Fixed, all must arrive | Count can be arbitrary |
+| **Waiting** | Parties wait for each other | Waiters independent of count-downers |
+| **Action** | Can run action on trip | No built-in action |
+| **Direction** | N parties arrive → release | Count down to 0 → release |
+| **Break** | Can be broken and reset | One-shot only |
+
+## Best Practices
+
+<AccordionGroup>
+  <Accordion title="Match party count">
+    Ensure the number of fibers calling `await` matches the `parties` parameter, otherwise fibers will wait indefinitely.
+  </Accordion>
+  
+  <Accordion title="Handle interruption">
+    When a fiber waiting at a barrier is interrupted, the barrier becomes broken. Use `reset` to recover or handle the failure appropriately.
+  </Accordion>
+  
+  <Accordion title="Use barrier action for coordination">
+    The barrier action is perfect for updating shared state or coordinating between phases, as it runs exactly once per trip.
+  </Accordion>
+  
+  <Accordion title="Check arrival index">
+    Use the arrival index returned by `await` to designate a "leader" fiber (index 0 is the last to arrive).
+  </Accordion>
+  
+  <Accordion title="Timeout protection">
+    Consider using `barrier.await.timeout(duration)` to prevent indefinite waiting if some fibers fail.
+  </Accordion>
+</AccordionGroup>
+
+## Implementation Details
+
+`CyclicBarrier` is implemented using:
+- `Ref[Int]` for tracking waiting parties
+- `Ref[Promise[Unit, Unit]]` for coordinating waiters
+- `Ref[Boolean]` for tracking broken state
+
+The implementation is fiber-safe and supports interruption.
+
+## See Also
+
+- [CountdownLatch](/api/countdown-latch) - One-shot coordination primitive
+- [Semaphore](/api/semaphore) - Resource access control
+- [Promise](/api/promise) - One-time value completion
+- [Queue](/api/queue) - Fiber-safe queue for communication

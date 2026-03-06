@@ -1,0 +1,617 @@
+---
+title: "Cause"
+description: "Represents the cause of fiber failure in ZIO"
+---
+
+## Overview
+
+`Cause[E]` represents the complete story of why a fiber failed. Unlike simple errors, a `Cause` can represent:
+- Typed errors (`E`)
+- Defects (unexpected errors/exceptions)
+- Interruptions
+- Sequential failures (one failure followed by another)
+- Parallel failures (multiple failures occurring concurrently)
+
+This rich failure model enables precise error handling and diagnostics.
+
+## Type Definition
+
+```scala
+sealed abstract class Cause[+E] extends Product with Serializable
+```
+
+## Type Parameters
+
+<ParamField path="E" type="type">
+  The type of the expected error
+</ParamField>
+
+## Cause Types
+
+### Fail
+
+```scala
+final case class Fail[+E](value: E, trace: StackTrace) extends Cause[E]
+```
+
+Represents a typed error - an expected failure in the error channel.
+
+<ParamField path="value" type="E">
+  The error value
+</ParamField>
+
+<ParamField path="trace" type="StackTrace">
+  The stack trace where the error occurred
+</ParamField>
+
+**Example:**
+```scala
+val cause = Cause.fail("User not found")
+```
+
+### Die
+
+```scala
+final case class Die(value: Throwable, trace: StackTrace) extends Cause[Nothing]
+```
+
+Represents a defect - an unexpected error that was not part of the typed error channel.
+
+<ParamField path="value" type="Throwable">
+  The throwable that caused the defect
+</ParamField>
+
+<ParamField path="trace" type="StackTrace">
+  The stack trace where the defect occurred
+</ParamField>
+
+**Example:**
+```scala
+val cause = Cause.die(new NullPointerException("Unexpected null"))
+```
+
+### Interrupt
+
+```scala
+final case class Interrupt(fiberId: FiberId, trace: StackTrace) extends Cause[Nothing]
+```
+
+Represents fiber interruption.
+
+<ParamField path="fiberId" type="FiberId">
+  The ID of the fiber that caused the interruption
+</ParamField>
+
+<ParamField path="trace" type="StackTrace">
+  The stack trace where the interruption occurred
+</ParamField>
+
+**Example:**
+```scala
+val cause = Cause.interrupt(FiberId.None)
+```
+
+### Then
+
+```scala
+final case class Then[+E](left: Cause[E], right: Cause[E]) extends Cause[E]
+```
+
+Represents sequential composition of causes - one failure followed by another.
+
+<ParamField path="left" type="Cause[E]">
+  The first cause
+</ParamField>
+
+<ParamField path="right" type="Cause[E]">
+  The second cause that occurred after the first
+</ParamField>
+
+### Both
+
+```scala
+final case class Both[+E](left: Cause[E], right: Cause[E]) extends Cause[E]
+```
+
+Represents parallel composition of causes - multiple failures occurring concurrently.
+
+<ParamField path="left" type="Cause[E]">
+  One of the concurrent causes
+</ParamField>
+
+<ParamField path="right" type="Cause[E]">
+  Another concurrent cause
+</ParamField>
+
+### Empty
+
+```scala
+case object Empty extends Cause[Nothing]
+```
+
+Represents the absence of failure (success).
+
+## Factory Methods
+
+### fail
+
+```scala
+def fail[E](error: E): Cause[E]
+```
+
+Creates a `Cause` representing a typed error.
+
+<ParamField path="error" type="E">
+  The error value
+</ParamField>
+
+**Example:**
+```scala
+val cause = Cause.fail("Invalid input")
+```
+
+### die
+
+```scala
+def die(defect: Throwable): Cause[Nothing]
+```
+
+Creates a `Cause` representing a defect.
+
+<ParamField path="defect" type="Throwable">
+  The throwable representing the defect
+</ParamField>
+
+**Example:**
+```scala
+val cause = Cause.die(new RuntimeException("Unexpected error"))
+```
+
+### interrupt
+
+```scala
+def interrupt(fiberId: FiberId): Cause[Nothing]
+```
+
+Creates a `Cause` representing an interruption.
+
+<ParamField path="fiberId" type="FiberId">
+  The fiber ID that caused the interruption
+</ParamField>
+
+### empty
+
+```scala
+val empty: Cause[Nothing]
+```
+
+Returns the empty cause (no failure).
+
+**Example:**
+```scala
+val cause = Cause.empty
+```
+
+## Combining Causes
+
+### ++
+
+```scala
+def ++[E1 >: E](that: Cause[E1]): Cause[E1]
+```
+
+Returns a cause that fails for this cause and the specified cause, in sequence.
+
+<ParamField path="that" type="Cause[E1]">
+  The cause to compose sequentially
+</ParamField>
+
+**Example:**
+```scala
+val combined = Cause.fail("First error") ++ Cause.fail("Second error")
+```
+
+### &&
+
+```scala
+def &&[E1 >: E](that: Cause[E1]): Cause[E1]
+```
+
+Returns a cause that fails for this cause and the specified cause, in parallel.
+
+<ParamField path="that" type="Cause[E1]">
+  The cause to compose in parallel
+</ParamField>
+
+**Example:**
+```scala
+val combined = Cause.fail("Error 1") && Cause.fail("Error 2")
+```
+
+## Query Methods
+
+### isEmpty
+
+```scala
+def isEmpty: Boolean
+```
+
+Determines if this cause is empty (represents success).
+
+<ResponseField name="return" type="Boolean">
+  `true` if the cause is empty, `false` otherwise
+</ResponseField>
+
+### isFailure
+
+```scala
+def isFailure: Boolean
+```
+
+Determines if this cause contains a typed failure.
+
+### isDie
+
+```scala
+def isDie: Boolean
+```
+
+Determines if this cause contains a defect.
+
+### isInterrupted
+
+```scala
+def isInterrupted: Boolean
+```
+
+Determines if this cause contains an interruption.
+
+### isInterruptedOnly
+
+```scala
+def isInterruptedOnly: Boolean
+```
+
+Determines if this cause contains only interruptions (no failures or defects).
+
+### contains
+
+```scala
+def contains[E1 >: E](that: Cause[E1]): Boolean
+```
+
+Determines if this cause contains or is equal to the specified cause.
+
+<ParamField path="that" type="Cause[E1]">
+  The cause to check for
+</ParamField>
+
+## Extraction Methods
+
+### failures
+
+```scala
+def failures: List[E]
+```
+
+Produces a list of all recoverable errors `E` in the `Cause`.
+
+<ResponseField name="return" type="List[E]">
+  A list of all typed errors
+</ResponseField>
+
+**Example:**
+```scala
+val cause = Cause.fail("Error 1") ++ Cause.fail("Error 2")
+val errors = cause.failures // List("Error 1", "Error 2")
+```
+
+### defects
+
+```scala
+def defects: List[Throwable]
+```
+
+Extracts a list of non-recoverable errors (defects) from the `Cause`.
+
+<ResponseField name="return" type="List[Throwable]">
+  A list of all defects
+</ResponseField>
+
+**Example:**
+```scala
+val cause = Cause.die(new Exception("Bug")) ++ Cause.die(new Error("Critical"))
+val bugs = cause.defects // List(Exception("Bug"), Error("Critical"))
+```
+
+### failureOption
+
+```scala
+def failureOption: Option[E]
+```
+
+Returns the `E` associated with the first `Fail` in this `Cause` if one exists.
+
+<ResponseField name="return" type="Option[E]">
+  `Some(error)` if a failure exists, `None` otherwise
+</ResponseField>
+
+### dieOption
+
+```scala
+def dieOption: Option[Throwable]
+```
+
+Returns the `Throwable` associated with the first `Die` in this `Cause` if one exists.
+
+<ResponseField name="return" type="Option[Throwable]">
+  `Some(throwable)` if a defect exists, `None` otherwise
+</ResponseField>
+
+### failureOrCause
+
+```scala
+def failureOrCause: Either[E, Cause[Nothing]]
+```
+
+Retrieve the first checked error on the `Left` if available, otherwise return the rest of the `Cause` on the `Right`.
+
+<ResponseField name="return" type="Either[E, Cause[Nothing]]">
+  Either the first error or the remaining cause
+</ResponseField>
+
+## Transformation Methods
+
+### map
+
+```scala
+def map[E2](f: E => E2): Cause[E2]
+```
+
+Maps the error value of this cause to a new error value.
+
+<ParamField path="f" type="E => E2">
+  The transformation function
+</ParamField>
+
+**Example:**
+```scala
+val cause = Cause.fail(404).map(code => s"HTTP $code")
+```
+
+### flatMap
+
+```scala
+def flatMap[E2](f: E => Cause[E2]): Cause[E2]
+```
+
+Transforms each error value in this cause to a new cause and flattens the result.
+
+<ParamField path="f" type="E => Cause[E2]">
+  The transformation function producing a cause
+</ParamField>
+
+### as
+
+```scala
+def as[E1](e: => E1): Cause[E1]
+```
+
+Maps the error value of this cause to the specified constant value.
+
+<ParamField path="e" type="E1">
+  The constant error value
+</ParamField>
+
+## Folding Methods
+
+### fold
+
+```scala
+def fold[Z](
+  empty0: => Z,
+  failCase0: (E, StackTrace) => Z,
+  dieCase0: (Throwable, StackTrace) => Z,
+  interruptCase0: (FiberId, StackTrace) => Z
+)(thenCase0: (Z, Z) => Z, bothCase0: (Z, Z) => Z, stacklessCase0: (Z, Boolean) => Z): Z
+```
+
+Folds over the cases of this cause with the specified functions.
+
+<ParamField path="empty0" type="Z">
+  Value for empty cause
+</ParamField>
+
+<ParamField path="failCase0" type="(E, StackTrace) => Z">
+  Handler for typed failures
+</ParamField>
+
+<ParamField path="dieCase0" type="(Throwable, StackTrace) => Z">
+  Handler for defects
+</ParamField>
+
+<ParamField path="interruptCase0" type="(FiberId, StackTrace) => Z">
+  Handler for interruptions
+</ParamField>
+
+<ParamField path="thenCase0" type="(Z, Z) => Z">
+  Handler for sequential composition
+</ParamField>
+
+<ParamField path="bothCase0" type="(Z, Z) => Z">
+  Handler for parallel composition
+</ParamField>
+
+**Example:**
+```scala
+val message = cause.fold(
+  "No error",
+  (e, _) => s"Failed with: $e",
+  (t, _) => s"Died with: ${t.getMessage}",
+  (id, _) => s"Interrupted by: $id"
+)((a, b) => s"$a then $b", (a, b) => s"$a and $b", (z, _) => z)
+```
+
+### foldLeft
+
+```scala
+def foldLeft[Z](z: Z)(f: PartialFunction[(Z, Cause[E]), Z]): Z
+```
+
+Folds over the cause to statefully compute a value.
+
+<ParamField path="z" type="Z">
+  The initial accumulator value
+</ParamField>
+
+<ParamField path="f" type="PartialFunction[(Z, Cause[E]), Z]">
+  The folding function
+</ParamField>
+
+## Utility Methods
+
+### squash
+
+```scala
+def squash(implicit ev: E <:< Throwable): Throwable
+```
+
+Squashes a cause into a single `Throwable`, discarding all but the first error and all defects.
+
+<ResponseField name="return" type="Throwable">
+  A single throwable representing the cause
+</ResponseField>
+
+### squashWith
+
+```scala
+def squashWith(f: E => Throwable): Throwable
+```
+
+Squashes a cause into a single `Throwable`, using the specified function to convert typed errors.
+
+<ParamField path="f" type="E => Throwable">
+  Function to convert typed errors to throwables
+</ParamField>
+
+### squashTrace
+
+```scala
+def squashTrace(implicit ev: E <:< Throwable): Throwable
+```
+
+Squashes the cause into a throwable and attaches the stack trace.
+
+### stripFailures
+
+```scala
+def stripFailures: Cause[Nothing]
+```
+
+Removes all typed failures from the cause, leaving only defects and interruptions.
+
+<ResponseField name="return" type="Cause[Nothing]">
+  A cause with only defects and interruptions
+</ResponseField>
+
+### stripSomeDefects
+
+```scala
+def stripSomeDefects(pf: PartialFunction[Throwable, Any]): Cause[E]
+```
+
+Removes all defects matching the specified partial function.
+
+<ParamField path="pf" type="PartialFunction[Throwable, Any]">
+  Partial function matching defects to remove
+</ParamField>
+
+### find
+
+```scala
+def find[Z](f: PartialFunction[Cause[E], Z]): Option[Z]
+```
+
+Finds and extracts details from a cause.
+
+<ParamField path="f" type="PartialFunction[Cause[E], Z]">
+  Partial function to extract information
+</ParamField>
+
+**Example:**
+```scala
+val firstError = cause.find {
+  case Cause.Fail(error, _) => error
+}
+```
+
+### filter
+
+```scala
+def filter(p: Cause[E] => Boolean): Cause[E]
+```
+
+Filters the specified causes out of this cause.
+
+<ParamField path="p" type="Cause[E] => Boolean">
+  Predicate to determine which causes to keep
+</ParamField>
+
+### prettyPrint
+
+```scala
+def prettyPrint: String
+```
+
+Produces a human-readable representation of the cause.
+
+<ResponseField name="return" type="String">
+  A formatted string representation
+</ResponseField>
+
+## Complete Example
+
+```scala
+import zio._
+
+object CauseExample extends ZIOAppDefault {
+  
+  def failingEffect: IO[String, Int] =
+    ZIO.fail("Something went wrong")
+  
+  def defectEffect: Task[Int] =
+    ZIO.die(new RuntimeException("Unexpected error"))
+  
+  def interruptedEffect: Task[Int] =
+    ZIO.interrupt
+  
+  def run = 
+    for {
+      // Capture the cause of a failure
+      cause1 <- failingEffect.cause
+      _      <- Console.printLine(s"Cause 1: $cause1")
+      
+      // Extract failures
+      errors = cause1.failures
+      _      <- Console.printLine(s"Errors: $errors")
+      
+      // Combine multiple causes
+      cause2 <- (failingEffect.cause <&> defectEffect.sandbox.cause)
+      _      <- Console.printLine(s"Combined cause: $cause2")
+      
+      // Check cause types
+      _      <- if (cause2.isDie) 
+                  Console.printLine("Contains a defect")
+                else 
+                  Console.printLine("No defects")
+      
+      // Map over causes
+      cause3 = Cause.fail(404).map(code => s"Error code: $code")
+      _      <- Console.printLine(s"Mapped cause: $cause3")
+      
+      // Pretty print
+      _      <- Console.printLine(cause2.prettyPrint)
+      
+    } yield ()
+}
+```

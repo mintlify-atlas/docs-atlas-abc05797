@@ -1,0 +1,357 @@
+---
+title: "Scope"
+description: "Master safe, composable resource management with scopes in ZIO"
+---
+
+# Scope
+
+A `Scope` is the foundation of safe, composable resource management in ZIO. It provides two fundamental operations: `addFinalizer` to register cleanup actions, and `close` to run all registered finalizers. Scopes ensure resources are properly released even in the presence of failures, interruptions, or cancellations.
+
+## Overview
+
+Scopes manage the lifecycle of resources by:
+
+1. **Registering finalizers** when resources are acquired
+2. **Running finalizers** when the scope closes
+3. **Guaranteeing cleanup** regardless of how execution completes
+
+<Note>
+Scopes replace manual resource management patterns like try-finally blocks, providing composable and type-safe resource handling.
+</Note>
+
+## Core Concepts
+
+### Basic Scope Usage
+
+The most common way to use scopes is through `ZIO.scoped`:
+
+```scala
+import zio._
+
+val resource: ZIO[Scope, IOException, File] = 
+  ZIO.acquireRelease(
+    openFile("data.txt")
+  )(file => 
+    closeFile(file).orDie
+  )
+
+val program = ZIO.scoped {
+  for {
+    file <- resource
+    data <- readFile(file)
+  } yield data
+}
+// File is automatically closed when scope exits
+```
+
+### Scope Lifecycle
+
+Scopes have a well-defined lifecycle:
+
+```scala
+for {
+  scope <- Scope.make
+  _     <- scope.addFinalizer(Console.printLine("Cleanup 1"))
+  _     <- scope.addFinalizer(Console.printLine("Cleanup 2"))
+  _     <- scope.close(Exit.unit)
+  // Prints:
+  // Cleanup 2
+  // Cleanup 1
+} yield ()
+```
+
+<Tip>
+Finalizers run in **reverse order** of registration, ensuring inner resources are cleaned up before outer ones.
+</Tip>
+
+## Scope Operations
+
+### Adding Finalizers
+
+Finalizers are cleanup actions registered with a scope:
+
+```scala
+val withFinalizer = ZIO.scoped {
+  for {
+    _ <- Scope.addFinalizer(Console.printLine("Cleaning up"))
+    result <- computeResult
+  } yield result
+}
+```
+
+### Finalizers with Exit Values
+
+Finalizers can inspect how the scope was closed:
+
+```scala
+val withExitFinalizer = ZIO.scoped {
+  for {
+    _ <- Scope.addFinalizerExit { exit =>
+      exit match {
+        case Exit.Success(_) => 
+          Console.printLine("Success cleanup")
+        case Exit.Failure(cause) => 
+          Console.printLine(s"Failure cleanup: $cause")
+      }
+    }
+    result <- riskyOperation
+  } yield result
+}
+```
+
+### Forking Child Scopes
+
+Scopes can have children that are independently managed:
+
+```scala
+val withChildScope = ZIO.scoped {
+  for {
+    parent <- ZIO.scope
+    child  <- parent.fork
+    _      <- child.addFinalizer(Console.printLine("Child cleanup"))
+    _      <- child.close(Exit.unit) // Close child explicitly
+    result <- parentWork
+  } yield result
+}
+```
+
+## Execution Strategies
+
+Scopes support different strategies for running finalizers:
+
+### Sequential Execution (Default)
+
+```scala
+val sequential = Scope.make // Default: ExecutionStrategy.Sequential
+```
+
+Finalizers run one after another in reverse order.
+
+### Parallel Execution
+
+```scala
+val parallel = Scope.parallel
+```
+
+All finalizers run concurrently for faster cleanup:
+
+```scala
+val withParallel = ZIO.scoped {
+  for {
+    scope <- ZIO.scope
+    child <- scope.forkWith(ExecutionStrategy.Parallel)
+    _ <- child.addFinalizer(cleanup1)
+    _ <- child.addFinalizer(cleanup2)
+    // cleanup1 and cleanup2 run in parallel
+  } yield ()
+}
+```
+
+### Parallel with Bounded Concurrency
+
+```scala
+val bounded = Scope.makeWith(
+  ExecutionStrategy.ParallelN(4)
+)
+```
+
+## Advanced Patterns
+
+### Extending Scopes
+
+Extend a resource's lifetime beyond the current scope:
+
+```scala
+val extendedResource = ZIO.scoped {
+  for {
+    outer <- ZIO.scope
+    resource <- ZIO.scoped {
+      for {
+        inner <- ZIO.scope
+        file  <- openFile("data.txt")
+        // Extend file's scope to outer
+        _     <- inner.extend[Any](ZIO.unit)
+      } yield file
+    }
+    // file is still open here
+    data <- readFile(resource)
+  } yield data
+}
+```
+
+### Closeable Scopes
+
+Manually managed scopes for custom resource patterns:
+
+```scala
+for {
+  scope <- Scope.make
+  file  <- scope.extend[Any](openFile("data.txt"))
+  data  <- readFile(file)
+  _     <- scope.close(Exit.succeed(data))
+} yield data
+```
+
+### The Global Scope
+
+For resources that should never be cleaned up:
+
+```scala
+val persistent = Scope.global.extend[Any] {
+  acquireResource // Never finalized
+}
+```
+
+<Warning>
+Use the global scope sparingly - resources added to it are never cleaned up until the application terminates.
+</Warning>
+
+## Practical Examples
+
+### Database Connection Pool
+
+```scala
+import zio._
+
+case class ConnectionPool(connections: Queue[Connection])
+
+def makeConnectionPool(size: Int): ZIO[Scope, Throwable, ConnectionPool] = {
+  for {
+    queue <- Queue.bounded[Connection](size)
+    _ <- ZIO.foreachDiscard(1 to size) { _ =>
+      ZIO.acquireRelease(
+        Connection.open
+      )(conn => 
+        conn.close.orDie
+      ).flatMap(queue.offer)
+    }
+  } yield ConnectionPool(queue)
+}
+
+val usePool = ZIO.scoped {
+  for {
+    pool <- makeConnectionPool(10)
+    conn <- pool.connections.take
+    result <- executeQuery(conn)
+  } yield result
+}
+```
+
+### File Processing Pipeline
+
+```scala
+def processFiles(
+  input: String, 
+  output: String
+): ZIO[Scope, IOException, Unit] = {
+  for {
+    inFile  <- openFile(input).acquireRelease(closeFile)
+    outFile <- openFile(output).acquireRelease(closeFile)
+    _       <- streamLines(inFile)
+                 .map(processLine)
+                 .foreach(line => writeFile(outFile, line))
+  } yield ()
+}
+
+val pipeline = ZIO.scoped(processFiles("in.txt", "out.txt"))
+```
+
+### Nested Resource Management
+
+```scala
+val nested = ZIO.scoped {
+  for {
+    // Outer resources
+    db <- connectDatabase.acquireRelease(_.close)
+    
+    // Inner scope for temporary resources
+    tempResult <- ZIO.scoped {
+      for {
+        cache <- createCache.acquireRelease(_.clear)
+        data  <- db.loadData
+        _     <- cache.populate(data)
+        result <- processWithCache(cache)
+      } yield result
+    }
+    // cache is closed here, db still open
+    
+    _ <- db.saveResult(tempResult)
+  } yield tempResult
+}
+```
+
+## Layers and Scopes
+
+ZIO Layers automatically create scopes for resource management:
+
+```scala
+val dbLayer: ZLayer[Any, Throwable, Database] = 
+  ZLayer.scoped {
+    ZIO.acquireRelease(
+      Database.connect
+    )(db => 
+      db.close.orDie
+    )
+  }
+```
+
+When a layer is used, its scope is managed by the ZIO runtime.
+
+## Best Practices
+
+<CardGroup cols={2}>
+  <Card title="Use ZIO.scoped" icon="shield-check">
+    Prefer `ZIO.scoped` over manual scope management for automatic cleanup.
+  </Card>
+  
+  <Card title="Release Never Fails" icon="ban">
+    Finalizers should use `.orDie` - cleanup must always succeed.
+  </Card>
+  
+  <Card title="Reverse Order" icon="arrows-rotate">
+    Remember finalizers run in reverse order of registration.
+  </Card>
+  
+  <Card title="Parallel Cleanup" icon="bolt">
+    Use parallel execution strategies for independent resources.
+  </Card>
+</CardGroup>
+
+## Common Patterns
+
+### The Acquire-Release Pattern
+
+```scala
+def withResource[R, E, A, B](
+  acquire: ZIO[R, E, A]
+)(release: A => UIO[Unit])(use: A => ZIO[R, E, B]): ZIO[R with Scope, E, B] = {
+  ZIO.acquireRelease(acquire)(release).flatMap(use)
+}
+```
+
+### Conditional Cleanup
+
+```scala
+val conditionalCleanup = ZIO.scoped {
+  for {
+    resource <- acquireResource
+    success  <- processResource(resource)
+    _ <- ZIO.when(success) {
+      Scope.addFinalizer(additionalCleanup)
+    }
+  } yield success
+}
+```
+
+## Performance Considerations
+
+- Finalizers are called synchronously during scope closure
+- Parallel execution strategies improve cleanup performance
+- Child scopes add minimal overhead
+- Use `extend` carefully - it increases resource lifetime
+
+## See Also
+
+- [Resource Management](/core-concepts/resource-management) - Higher-level resource patterns
+- [ZLayer](/dependency-injection/zlayer) - Using scopes with layers
+- API Reference: `Scope.scala:30`

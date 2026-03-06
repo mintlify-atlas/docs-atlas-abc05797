@@ -1,0 +1,753 @@
+---
+title: TMap
+description: Transactional hash map with atomic operations in ZIO STM
+---
+
+## Overview
+
+`TMap[K, V]` is a transactional hash map that provides atomic operations on key-value pairs. It is implemented using `TRef` and `TArray` with chaining for conflict resolution.
+
+```scala
+final class TMap[K, V]
+```
+
+## Creating TMap
+
+### empty
+
+Creates an empty transactional map:
+
+```scala
+import zio.stm._
+
+val emptyMap: USTM[TMap[String, Int]] = 
+  TMap.empty[String, Int]
+```
+
+### make
+
+Creates a map initialized with key-value pairs:
+
+```scala
+import zio.stm._
+
+val createMap: USTM[TMap[String, Int]] = 
+  TMap.make(
+    "alice" -> 100,
+    "bob" -> 200,
+    "charlie" -> 150
+  )
+```
+
+### fromIterable
+
+Creates a map from an iterable of tuples:
+
+```scala
+import zio.stm._
+
+val fromList: USTM[TMap[String, Int]] = 
+  TMap.fromIterable(List(
+    "x" -> 1,
+    "y" -> 2,
+    "z" -> 3
+  ))
+```
+
+## Basic Operations
+
+### get
+
+Retrieves a value by key:
+
+```scala
+import zio._
+import zio.stm._
+
+val getValue: UIO[Option[Int]] = for {
+  map <- TMap.make("a" -> 1, "b" -> 2).commit
+  value <- map.get("a").commit
+} yield value
+// Result: Some(1)
+```
+
+### getOrElse
+
+Retrieves a value or returns a default:
+
+```scala
+val getWithDefault: UIO[Int] = for {
+  map <- TMap.make("a" -> 1).commit
+  value <- map.getOrElse("missing", 0).commit
+} yield value
+// Result: 0
+```
+
+### getOrElseSTM
+
+Retrieves a value or computes a default transactionally:
+
+```scala
+import zio._
+import zio.stm._
+
+val getWithDefaultSTM: IO[String, Int] = for {
+  map <- TMap.make("a" -> 1).commit
+  value <- map.getOrElseSTM("missing", 
+    STM.fail("Key not found")
+  ).commit
+} yield value
+```
+
+### put
+
+Stores or updates a key-value pair:
+
+```scala
+import zio._
+import zio.stm._
+
+val putValue: UIO[Unit] = for {
+  map <- TMap.empty[String, Int].commit
+  _ <- map.put("alice", 100).commit
+  _ <- map.put("alice", 150).commit  // Updates existing
+  value <- map.get("alice").commit
+} yield value
+// Result: Some(150)
+```
+
+### putIfAbsent
+
+Puts a value only if the key doesn't exist:
+
+```scala
+val putIfNew: UIO[Option[Int]] = for {
+  map <- TMap.make("a" -> 1).commit
+  _ <- map.putIfAbsent("a", 2).commit  // No effect
+  _ <- map.putIfAbsent("b", 3).commit  // Inserts
+  a <- map.get("a").commit
+  b <- map.get("b").commit
+} yield (a, b)
+// Result: (Some(1), Some(3))
+```
+
+### delete
+
+Removes a key-value pair:
+
+```scala
+import zio._
+import zio.stm._
+
+val deleteKey: UIO[Option[Int]] = for {
+  map <- TMap.make("a" -> 1, "b" -> 2).commit
+  _ <- map.delete("a").commit
+  value <- map.get("a").commit
+} yield value
+// Result: None
+```
+
+### deleteAll
+
+Removes multiple keys:
+
+```scala
+val deleteMultiple: UIO[Int] = for {
+  map <- TMap.make("a" -> 1, "b" -> 2, "c" -> 3).commit
+  _ <- map.deleteAll(List("a", "b")).commit
+  size <- map.size.commit
+} yield size
+// Result: 1
+```
+
+## Testing
+
+### contains
+
+Checks if a key exists:
+
+```scala
+import zio._
+import zio.stm._
+
+val hasKey: UIO[Boolean] = for {
+  map <- TMap.make("a" -> 1).commit
+  result <- map.contains("a").commit
+} yield result
+// Result: true
+```
+
+### isEmpty
+
+Checks if the map is empty:
+
+```scala
+val checkEmpty: UIO[Boolean] = for {
+  map <- TMap.empty[String, Int].commit
+  result <- map.isEmpty.commit
+} yield result
+// Result: true
+```
+
+### size
+
+Gets the number of entries:
+
+```scala
+val getSize: UIO[Int] = for {
+  map <- TMap.make("a" -> 1, "b" -> 2, "c" -> 3).commit
+  size <- map.size.commit
+} yield size
+// Result: 3
+```
+
+## Advanced Updates
+
+### merge
+
+Merges a value with an existing one:
+
+```scala
+import zio._
+import zio.stm._
+
+val mergeValues: UIO[Int] = for {
+  map <- TMap.make("counter" -> 5).commit
+  result <- map.merge("counter", 3)(_ + _).commit
+} yield result
+// Result: 8 (5 + 3)
+```
+
+### mergeSTM
+
+Merges using a transactional function:
+
+```scala
+import zio._
+import zio.stm._
+
+val mergeWithValidation: IO[String, Int] = for {
+  map <- TMap.make("balance" -> 100).commit
+  result <- map.mergeSTM("balance", 50) { (old, new_) =>
+    if (old + new_ >= 0) STM.succeed(old + new_)
+    else STM.fail("Would be negative")
+  }.commit
+} yield result
+// Result: 150
+```
+
+### updateWith
+
+Updates or removes based on a function:
+
+```scala
+import zio._
+import zio.stm._
+
+val updateConditional: UIO[Option[Int]] = for {
+  map <- TMap.make("a" -> 5).commit
+  result <- map.updateWith("a") {
+    case Some(n) if n > 0 => Some(n * 2)
+    case _ => None  // Remove if <= 0
+  }.commit
+} yield result
+// Result: Some(10)
+```
+
+### updateWithSTM
+
+```scala
+import zio._
+import zio.stm._
+
+val updateWithSTM: IO[String, Option[Int]] = for {
+  map <- TMap.make("value" -> 10).commit
+  result <- map.updateWithSTM("value") {
+    case Some(n) if n > 5 => STM.succeed(Some(n * 2))
+    case Some(n) => STM.fail("Too small")
+    case None => STM.succeed(None)
+  }.commit
+} yield result
+```
+
+## Iteration and Collection
+
+### keys
+
+Gets all keys:
+
+```scala
+import zio._
+import zio.stm._
+
+val allKeys: UIO[List[String]] = for {
+  map <- TMap.make("a" -> 1, "b" -> 2, "c" -> 3).commit
+  keys <- map.keys.commit
+} yield keys
+// Result: List("a", "b", "c")
+```
+
+### values
+
+Gets all values:
+
+```scala
+val allValues: UIO[List[Int]] = for {
+  map <- TMap.make("a" -> 1, "b" -> 2).commit
+  values <- map.values.commit
+} yield values
+// Result: List(1, 2)
+```
+
+### toList
+
+Converts to a list of key-value pairs:
+
+```scala
+val asList: UIO[List[(String, Int)]] = for {
+  map <- TMap.make("a" -> 1, "b" -> 2).commit
+  list <- map.toList.commit
+} yield list
+// Result: List(("a", 1), ("b", 2))
+```
+
+### toChunk
+
+Converts to a chunk of key-value pairs:
+
+```scala
+import zio._
+import zio.stm._
+
+val asChunk: UIO[Chunk[(String, Int)]] = for {
+  map <- TMap.make("a" -> 1, "b" -> 2).commit
+  chunk <- map.toChunk.commit
+} yield chunk
+```
+
+### toMap
+
+Converts to a regular Scala Map:
+
+```scala
+val asMap: UIO[Map[String, Int]] = for {
+  tmap <- TMap.make("a" -> 1, "b" -> 2).commit
+  map <- tmap.toMap.commit
+} yield map
+// Result: Map("a" -> 1, "b" -> 2)
+```
+
+## Folding and Traversal
+
+### fold
+
+Folds over all entries using a pure function:
+
+```scala
+import zio._
+import zio.stm._
+
+val sumValues: UIO[Int] = for {
+  map <- TMap.make("a" -> 1, "b" -> 2, "c" -> 3).commit
+  sum <- map.fold(0) { (acc, (k, v)) => acc + v }.commit
+} yield sum
+// Result: 6
+```
+
+### foldSTM
+
+Folds using a transactional function:
+
+```scala
+import zio._
+import zio.stm._
+
+val foldWithValidation: IO[String, Int] = for {
+  map <- TMap.make("a" -> 1, "b" -> 2).commit
+  sum <- map.foldSTM(0) { (acc, (k, v)) =>
+    if (v > 0) STM.succeed(acc + v)
+    else STM.fail("Negative value")
+  }.commit
+} yield sum
+```
+
+### foreach
+
+Performs an effect for each entry:
+
+```scala
+import zio._
+import zio.stm._
+
+val processAll: IO[String, Unit] = for {
+  map <- TMap.make("a" -> 1, "b" -> 2).commit
+  ref <- TRef.makeCommit(0)
+  _ <- map.foreach { (k, v) =>
+    ref.update(_ + v)
+  }.commit
+  total <- ref.get.commit
+} yield total
+// Result: total = 3
+```
+
+## Searching
+
+### find
+
+Finds the first entry matching a partial function:
+
+```scala
+import zio._
+import zio.stm._
+
+val findLargeValue: UIO[Option[String]] = for {
+  map <- TMap.make("a" -> 1, "b" -> 50, "c" -> 3).commit
+  result <- map.find {
+    case (k, v) if v > 10 => k
+  }.commit
+} yield result
+// Result: Some("b")
+```
+
+### findSTM
+
+Finds using a transactional predicate:
+
+```scala
+import zio._
+import zio.stm._
+
+val findWithSTM: IO[String, Option[(String, Int)]] = for {
+  map <- TMap.make("a" -> 1, "b" -> 2).commit
+  result <- map.findSTM { (k, v) =>
+    if (v > 1) STM.succeed((k, v))
+    else STM.fail(None)
+  }.commit
+} yield result
+```
+
+### findAll
+
+Finds all entries matching a partial function:
+
+```scala
+import zio._
+import zio.stm._
+
+val findAllEven: UIO[Chunk[String]] = for {
+  map <- TMap.make("a" -> 1, "b" -> 2, "c" -> 4).commit
+  results <- map.findAll {
+    case (k, v) if v % 2 == 0 => k
+  }.commit
+} yield results
+// Result: Chunk("b", "c")
+```
+
+## Filtering
+
+### removeIf
+
+Removes entries matching a predicate and returns them:
+
+```scala
+import zio._
+import zio.stm._
+
+val removeNegative: UIO[Chunk[(String, Int)]] = for {
+  map <- TMap.make("a" -> 1, "b" -> -2, "c" -> 3).commit
+  removed <- map.removeIf((k, v) => v < 0).commit
+  remaining <- map.toChunk.commit
+} yield (removed, remaining)
+// Result: removed = Chunk(("b", -2))
+//         remaining contains ("a", 1) and ("c", 3)
+```
+
+### removeIfDiscard
+
+Removes entries without returning them:
+
+```scala
+val removeDiscarding: UIO[Int] = for {
+  map <- TMap.make("a" -> 1, "b" -> 2, "c" -> 3).commit
+  _ <- map.removeIfDiscard((k, v) => v % 2 == 0).commit
+  size <- map.size.commit
+} yield size
+// Result: 2 (only odd values remain)
+```
+
+### retainIf
+
+Retains only entries matching a predicate:
+
+```scala
+val keepPositive: UIO[Chunk[(String, Int)]] = for {
+  map <- TMap.make("a" -> 1, "b" -> -2, "c" -> 3).commit
+  removed <- map.retainIf((k, v) => v > 0).commit
+} yield removed
+// removed contains the deleted entries
+```
+
+### retainIfDiscard
+
+```scala
+val retainDiscarding: UIO[Int] = for {
+  map <- TMap.make("a" -> 1, "b" -> 2, "c" -> 3).commit
+  _ <- map.retainIfDiscard((k, v) => v > 1).commit
+  size <- map.size.commit
+} yield size
+// Result: 2
+```
+
+## Transformation
+
+### transform
+
+Transforms all key-value pairs:
+
+```scala
+import zio._
+import zio.stm._
+
+val transformAll: UIO[Map[String, Int]] = for {
+  map <- TMap.make("a" -> 1, "b" -> 2).commit
+  _ <- map.transform { (k, v) =>
+    (k.toUpperCase, v * 10)
+  }.commit
+  result <- map.toMap.commit
+} yield result
+// Result: Map("A" -> 10, "B" -> 20)
+```
+
+### transformSTM
+
+Transforms using a transactional function:
+
+```scala
+import zio._
+import zio.stm._
+
+val transformWithValidation: IO[String, Unit] = for {
+  map <- TMap.make("a" -> 1, "b" -> 2).commit
+  _ <- map.transformSTM { (k, v) =>
+    if (v > 0) STM.succeed((k, v * 2))
+    else STM.fail("Negative value")
+  }.commit
+} yield ()
+```
+
+### transformValues
+
+Transforms only values, keeping keys unchanged:
+
+```scala
+val doubleValues: UIO[Unit] = for {
+  map <- TMap.make("a" -> 1, "b" -> 2).commit
+  _ <- map.transformValues(_ * 2).commit
+  values <- map.values.commit
+} yield values
+// values = List(2, 4)
+```
+
+### transformValuesSTM
+
+```scala
+import zio._
+import zio.stm._
+
+val transformValuesWithSTM: IO[String, Unit] = for {
+  map <- TMap.make("a" -> 1, "b" -> 2).commit
+  _ <- map.transformValuesSTM { v =>
+    if (v > 0) STM.succeed(v * 2)
+    else STM.fail("Invalid value")
+  }.commit
+} yield ()
+```
+
+## Taking Elements
+
+### takeFirst
+
+Takes and removes the first matching entry:
+
+```scala
+import zio._
+import zio.stm._
+
+val takeMatching: UIO[Int] = for {
+  map <- TMap.make("a" -> 1, "b" -> 50, "c" -> 3).commit
+  value <- map.takeFirst {
+    case (k, v) if v > 10 => v
+  }.commit
+  size <- map.size.commit
+} yield (value, size)
+// Result: (50, 2)
+```
+
+### takeFirstSTM
+
+```scala
+import zio._
+import zio.stm._
+
+val takeWithSTM: IO[String, Int] = for {
+  map <- TMap.make("a" -> 1, "b" -> 2).commit
+  value <- map.takeFirstSTM { (k, v) =>
+    if (v > 1) STM.succeed(v * 10)
+    else STM.fail(None)
+  }.commit
+} yield value
+```
+
+### takeSome
+
+Takes and removes all matching entries:
+
+```scala
+import zio._
+import zio.stm._
+
+val takeMultiple: UIO[NonEmptyChunk[Int]] = for {
+  map <- TMap.make("a" -> 1, "b" -> 2, "c" -> 3).commit
+  values <- map.takeSome {
+    case (k, v) if v > 1 => v
+  }.commit
+} yield values
+// Result: NonEmptyChunk(2, 3)
+```
+
+## Practical Examples
+
+### User Session Cache
+
+```scala
+import zio._
+import zio.stm._
+import java.time.Instant
+
+case class Session(userId: String, loginTime: Instant)
+
+class SessionCache(private val sessions: TMap[String, Session]) {
+  
+  def login(sessionId: String, userId: String): UIO[Unit] = 
+    sessions.put(
+      sessionId,
+      Session(userId, Instant.now())
+    ).commit
+  
+  def logout(sessionId: String): UIO[Unit] = 
+    sessions.delete(sessionId).commit
+  
+  def getUser(sessionId: String): UIO[Option[String]] = 
+    sessions.get(sessionId).map(_.map(_.userId)).commit
+  
+  def cleanupOld(cutoff: Instant): UIO[Int] = 
+    for {
+      removed <- sessions.removeIf { (id, session) =>
+        session.loginTime.isBefore(cutoff)
+      }.commit
+    } yield removed.size
+}
+
+object SessionCache {
+  def make: UIO[SessionCache] = 
+    TMap.empty[String, Session].commit
+      .map(new SessionCache(_))
+}
+```
+
+### Inventory System
+
+```scala
+import zio._
+import zio.stm._
+
+class Inventory(private val stock: TMap[String, Int]) {
+  
+  def addStock(item: String, quantity: Int): UIO[Int] = 
+    stock.merge(item, quantity)(_ + _).commit
+  
+  def removeStock(item: String, quantity: Int): IO[String, Int] = 
+    STM.atomically {
+      for {
+        current <- stock.getOrElse(item, 0)
+        _ <- if (current >= quantity) STM.unit
+             else STM.fail(s"Insufficient stock: $current < $quantity")
+        newQty <- stock.merge(item, -quantity)(_ + _)
+      } yield newQty
+    }
+  
+  def checkStock(item: String): UIO[Int] = 
+    stock.getOrElse(item, 0).commit
+  
+  def lowStock(threshold: Int): UIO[List[(String, Int)]] = 
+    stock.toList
+      .map(_.filter(_._2 < threshold))
+      .commit
+}
+
+object Inventory {
+  def make: UIO[Inventory] = 
+    TMap.empty[String, Int].commit
+      .map(new Inventory(_))
+}
+```
+
+### Leaderboard
+
+```scala
+import zio._
+import zio.stm._
+
+class Leaderboard(private val scores: TMap[String, Int]) {
+  
+  def updateScore(player: String, score: Int): UIO[Int] = 
+    scores.merge(player, score)(math.max).commit
+  
+  def incrementScore(player: String, points: Int): UIO[Int] = 
+    scores.merge(player, points)(_ + _).commit
+  
+  def getScore(player: String): UIO[Int] = 
+    scores.getOrElse(player, 0).commit
+  
+  def topN(n: Int): UIO[List[(String, Int)]] = 
+    scores.toList
+      .map(_.sortBy(-_._2).take(n))
+      .commit
+  
+  def removePlayer(player: String): UIO[Unit] = 
+    scores.delete(player).commit
+}
+
+object Leaderboard {
+  def make: UIO[Leaderboard] = 
+    TMap.empty[String, Int].commit
+      .map(new Leaderboard(_))
+}
+```
+
+## Performance Considerations
+
+<Tip>
+**Initial Capacity**
+
+The initial capacity is 16 buckets. For large maps, consider using `fromIterable` with pre-sized collections.
+</Tip>
+
+<Info>
+**Load Factor**
+
+`TMap` automatically resizes when the load factor exceeds 0.75. This ensures good performance but may cause temporary contention during resizing.
+</Info>
+
+<Warning>
+**Resize Locking**
+
+During resize operations, a lock is acquired to prevent multiple concurrent resizes. Transactions that attempt to resize while another is in progress will retry.
+</Warning>
+
+## See Also
+
+- [TRef](/stm/tref) - Transactional references
+- [TArray](/stm/tarray) - Transactional arrays
+- [ZSTM](/stm/zstm) - Core STM effect type
+- [STM Overview](/stm/overview) - STM concepts

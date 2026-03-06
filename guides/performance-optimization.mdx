@@ -1,0 +1,629 @@
+---
+title: Performance Optimization
+description: Best practices for optimizing ZIO application performance
+---
+
+## Overview
+
+ZIO provides excellent performance out of the box, but understanding optimization techniques can help you build highly efficient applications. This guide covers patterns for optimizing concurrency, reducing allocations, and improving throughput.
+
+## Understanding ZIO Performance Characteristics
+
+<Note>
+ZIO's runtime is designed for high concurrency with low overhead. Most performance issues come from algorithmic choices, not the runtime itself.
+</Note>
+
+### ZIO Performance Strengths
+
+- Lightweight fibers (millions can run concurrently)
+- Lock-free data structures
+- Efficient asynchronous boundaries
+- Automatic resource pooling
+- Stack-safe recursion
+
+## Pattern 1: Concurrency Patterns
+
+### Sequential vs Parallel Execution
+
+```scala
+import zio._
+
+// Bad: Sequential execution when operations are independent
+val sequential: ZIO[Any, Throwable, List[User]] = 
+  for {
+    user1 <- fetchUser("1")  // Wait for 1
+    user2 <- fetchUser("2")  // Then wait for 2
+    user3 <- fetchUser("3")  // Then wait for 3
+  } yield List(user1, user2, user3)
+// Total time: 3x fetch time
+
+// Good: Parallel execution for independent operations
+val parallel: ZIO[Any, Throwable, List[User]] = 
+  ZIO.collectAllPar(List(
+    fetchUser("1"),
+    fetchUser("2"),
+    fetchUser("3")
+  ))
+// Total time: 1x fetch time (fastest of the three)
+```
+
+<Tip>
+Use `collectAllPar`, `foreachPar`, or `zipPar` when operations don't depend on each other.
+</Tip>
+
+### Controlling Parallelism
+
+```scala
+import zio._
+
+// Bad: Unbounded parallelism can overwhelm resources
+val unbounded: ZIO[Any, Throwable, List[Result]] = 
+  ZIO.foreachPar(1 to 10000)(processItem)
+// May create 10,000 concurrent requests!
+
+// Good: Bounded parallelism
+val bounded: ZIO[Any, Throwable, List[Result]] = 
+  ZIO.foreachPar(1 to 10000)(processItem)
+    .withParallelism(50)
+// At most 50 concurrent requests
+```
+
+<Warning>
+Unbounded parallelism can exhaust connection pools, file descriptors, and memory. Always set appropriate bounds.
+</Warning>
+
+### Racing Operations
+
+```scala
+import zio._
+
+// Race multiple strategies and take the first to succeed
+val optimizedFetch: ZIO[Any, Throwable, Data] = 
+  fetchFromCache.race(fetchFromDatabase)
+// Returns whichever completes first
+
+// Race with timeout
+val withTimeout: ZIO[Any, Throwable, Option[Data]] = 
+  slowOperation
+    .timeout(5.seconds)
+// Returns None if operation takes > 5 seconds
+
+// Use the fastest of multiple sources
+val multiSource: ZIO[Any, Throwable, Data] = 
+  ZIO.raceAll(
+    fetchFromPrimaryDB,
+    List(
+      fetchFromReplicaDB1,
+      fetchFromReplicaDB2,
+      fetchFromCache
+    )
+  )
+```
+
+## Pattern 2: Efficient Data Structures
+
+### Using Ref for Shared State
+
+```scala
+import zio._
+
+// Bad: Synchronized mutable state
+class Counter {
+  private var count = 0
+  def increment(): Int = synchronized {
+    count += 1
+    count
+  }
+}
+
+// Good: Lock-free Ref
+class Counter(ref: Ref[Int]) {
+  def increment: UIO[Int] = 
+    ref.updateAndGet(_ + 1)
+}
+
+object Counter {
+  val make: UIO[Counter] = 
+    Ref.make(0).map(new Counter(_))
+}
+```
+
+<Note>
+`Ref` uses compare-and-swap operations, making it much faster than locks for high-contention scenarios.
+</Note>
+
+### Queue for Producer-Consumer
+
+```scala
+import zio._
+
+// Efficient bounded queue for backpressure
+val pipeline: ZIO[Any, Nothing, Unit] = 
+  for {
+    queue <- Queue.bounded[Task[Unit]](100)
+    // Producers
+    _ <- ZIO.foreach(1 to 4) { _ =>
+      produceWork(queue).forever.fork
+    }
+    // Consumers
+    _ <- ZIO.foreach(1 to 8) { _ =>
+      queue.take.flatten.forever.fork
+    }
+  } yield ()
+
+// Use dropping or sliding queue for different backpressure strategies
+val droppingQueue: UIO[Queue[Item]] = 
+  Queue.dropping[Item](100) // Drops new items when full
+
+val slidingQueue: UIO[Queue[Item]] = 
+  Queue.sliding[Item](100) // Drops old items when full
+```
+
+### Hub for Broadcasting
+
+```scala
+import zio._
+
+// Efficient pub-sub with Hub
+val pubsub: ZIO[Any, Nothing, Unit] = 
+  for {
+    hub <- Hub.bounded[Message](100)
+    // Publisher
+    _ <- publishMessages(hub).forever.fork
+    // Multiple subscribers
+    _ <- ZIO.foreach(1 to 10) { id =>
+      hub.subscribe.flatMap { queue =>
+        processMessages(id, queue).forever.fork
+      }
+    }
+  } yield ()
+```
+
+<Tip>
+Use `Hub` for one-to-many message distribution instead of multiple queues.
+</Tip>
+
+## Pattern 3: Streaming with ZStream
+
+### Memory-Efficient Processing
+
+```scala
+import zio._
+import zio.stream._
+
+// Bad: Loading entire dataset into memory
+val loadAll: ZIO[Any, Throwable, List[Result]] = 
+  for {
+    items <- loadAllItems // Loads 1M items into memory!
+    results = items.map(processItem)
+  } yield results
+
+// Good: Streaming processing
+val streaming: ZIO[Any, Throwable, Unit] = 
+  ZStream
+    .fromIterable(itemIds)
+    .mapZIO(loadItem)         // Load one at a time
+    .mapZIOPar(16)(processItem) // Process 16 in parallel
+    .foreach(saveResult)       // Save as you go
+// Constant memory usage regardless of dataset size
+```
+
+### Efficient Chunking
+
+```scala
+import zio._
+import zio.stream._
+
+// Bad: Processing items one at a time
+val oneByOne: ZStream[Any, Throwable, Result] = 
+  ZStream.fromIterable(items)
+    .mapZIO(item => insertToDatabase(item))
+// Each item is a separate database call
+
+// Good: Batch operations
+val batched: ZStream[Any, Throwable, Result] = 
+  ZStream.fromIterable(items)
+    .grouped(100)  // Create chunks of 100
+    .mapZIO(chunk => batchInsert(chunk.toList))
+    .flatMap(ZStream.fromIterable(_))
+// 100x fewer database calls
+```
+
+<Note>
+Batching operations can provide orders of magnitude improvement for I/O-bound operations.
+</Note>
+
+### Buffering and Prefetching
+
+```scala
+import zio._
+import zio.stream._
+
+// Add buffering to decouple producer and consumer speeds
+val buffered: ZStream[Any, Throwable, Result] = 
+  ZStream.fromIterable(items)
+    .buffer(100)              // Buffer up to 100 items
+    .mapZIO(expensiveProcess) // Slow processing
+// Producer can stay ahead of consumer
+```
+
+## Pattern 4: Reducing Allocations
+
+### Reusing Objects
+
+```scala
+import zio._
+
+// Bad: Creating new objects repeatedly
+val wasteful: ZIO[Any, Nothing, Unit] = 
+  ZIO.foreachDiscard(1 to 1000000) { i =>
+    ZIO.succeed(new MyObject(i)) *> ZIO.unit
+  }
+// Creates 1M objects
+
+// Good: Reuse when possible
+val efficient: ZIO[Any, Nothing, Unit] = {
+  val reusable = new MyObject(0)
+  ZIO.foreachDiscard(1 to 1000000) { i =>
+    ZIO.succeed(reusable.update(i))
+  }
+}
+```
+
+### Avoiding Intermediate Collections
+
+```scala
+import zio._
+
+// Bad: Multiple intermediate collections
+val inefficient: ZIO[Any, Throwable, List[Result]] = 
+  for {
+    items <- loadItems
+    filtered = items.filter(_.isValid)        // New list
+    mapped = filtered.map(transform)           // New list
+    sorted = mapped.sortBy(_.priority)         // New list
+  } yield sorted
+
+// Good: Use views or stream operations
+val efficient: ZIO[Any, Throwable, List[Result]] = 
+  for {
+    items <- loadItems
+    results = items
+      .view
+      .filter(_.isValid)
+      .map(transform)
+      .toList
+      .sortBy(_.priority)
+  } yield results
+// Only creates the final list
+```
+
+<Tip>
+Use `.view` for lazy collection transformations or `ZStream` for large datasets.
+</Tip>
+
+## Pattern 5: Caching
+
+### Memoization
+
+```scala
+import zio._
+
+// Expensive computation
+def expensiveComputation(n: Int): UIO[BigInt] = 
+  ZIO.succeed(fibonacci(n))
+
+// Bad: Computing the same value repeatedly
+val repeated: ZIO[Any, Nothing, List[BigInt]] = 
+  ZIO.foreach(List(45, 45, 45, 45))(expensiveComputation)
+// Computes fibonacci(45) four times!
+
+// Good: Memoize the computation
+val memoized: ZIO[Any, Nothing, Int => UIO[BigInt]] = 
+  expensiveComputation(_).memoize
+
+val cached: ZIO[Any, Nothing, List[BigInt]] = 
+  for {
+    compute <- memoized
+    results <- ZIO.foreach(List(45, 45, 45, 45))(compute)
+  } yield results
+// Computes fibonacci(45) only once
+```
+
+### TTL-Based Caching
+
+```scala
+import zio._
+
+// Simple cache with TTL
+class Cache[K, V](ref: Ref[Map[K, (V, Long)]], ttl: Duration) {
+  def get(key: K, fetch: K => UIO[V]): UIO[V] = 
+    for {
+      now <- Clock.currentTime(TimeUnit.MILLISECONDS)
+      cached <- ref.get.map(_.get(key))
+      value <- cached match {
+        case Some((v, expiry)) if expiry > now => 
+          ZIO.succeed(v)
+        case _ => 
+          for {
+            v <- fetch(key)
+            expiry = now + ttl.toMillis
+            _ <- ref.update(_.updated(key, (v, expiry)))
+          } yield v
+      }
+    } yield value
+}
+
+object Cache {
+  def make[K, V](ttl: Duration): UIO[Cache[K, V]] = 
+    Ref.make(Map.empty[K, (V, Long)])
+      .map(new Cache(_, ttl))
+}
+```
+
+<Note>
+Caching is one of the most effective performance optimizations for expensive or frequently accessed data.
+</Note>
+
+## Pattern 6: Resource Pooling
+
+### Connection Pooling
+
+```scala
+import zio._
+
+// Bad: Creating connections on demand
+def queryWithNewConnection(sql: String): ZIO[Any, Throwable, List[Row]] = 
+  ZIO.acquireRelease(
+    ZIO.attempt(createConnection())
+  )(conn => ZIO.succeed(conn.close())).flatMap { conn =>
+    ZIO.attempt(conn.query(sql))
+  }
+// Very expensive: creates and destroys connection every time
+
+// Good: Use a connection pool
+trait ConnectionPool {
+  def withConnection[R, E, A](
+    f: Connection => ZIO[R, E, A]
+  ): ZIO[R, E, A]
+}
+
+object ConnectionPool {
+  def make(size: Int): ZIO[Scope, Throwable, ConnectionPool] = 
+    ZIO.acquireRelease(
+      ZIO.foreach(1 to size)(_ => createConnection())
+    )(conns => ZIO.foreach(conns)(c => ZIO.succeed(c.close()))).map { connections =>
+      new ConnectionPool {
+        private val semaphore = Semaphore.make(size)
+        private val ref = Ref.make(connections.toList)
+        
+        def withConnection[R, E, A](
+          f: Connection => ZIO[R, E, A]
+        ): ZIO[R, E, A] = 
+          semaphore.flatMap { sem =>
+            sem.withPermit {
+              for {
+                conns <- ref.get
+                conn = conns.head
+                _ <- ref.update(cs => cs.tail :+ cs.head)
+                result <- f(conn)
+              } yield result
+            }
+          }
+      }
+    }
+}
+```
+
+### Object Pooling
+
+```scala
+import zio._
+
+// Pool expensive objects
+class ObjectPool[A](pool: Queue[A], create: UIO[A]) {
+  def use[R, E, B](f: A => ZIO[R, E, B]): ZIO[R, E, B] = 
+    pool.take.flatMap { obj =>
+      f(obj).ensuring(pool.offer(obj))
+    }
+}
+
+object ObjectPool {
+  def make[A](size: Int, create: UIO[A]): UIO[ObjectPool[A]] = 
+    for {
+      pool <- Queue.bounded[A](size)
+      _ <- ZIO.foreach(1 to size)(_ => create.flatMap(pool.offer))
+    } yield new ObjectPool(pool, create)
+}
+```
+
+<Tip>
+Use pools for expensive resources like database connections, HTTP clients, and large buffers.
+</Tip>
+
+## Pattern 7: Lazy Evaluation
+
+### Using ZIO.suspend
+
+```scala
+import zio._
+
+// Bad: Eager evaluation
+val eager: ZIO[Any, Nothing, BigInt] = 
+  ZIO.succeed(expensiveComputation())
+// Computed immediately, even if never used!
+
+// Good: Lazy evaluation
+val deferred: ZIO[Any, Nothing, BigInt] = 
+  ZIO.suspend(ZIO.succeed(expensiveComputation()))
+// Only computed when the effect is run
+```
+
+### Lazy Collections
+
+```scala
+import zio._
+import zio.stream._
+
+// Bad: Materializing entire collection
+val materialized: ZIO[Any, Nothing, List[Int]] = 
+  ZIO.succeed((1 to 1000000).toList)
+    .map(_.filter(_ % 2 == 0).take(10))
+// Creates 1M element list, then filters, then takes 10
+
+// Good: Lazy stream
+val lazy: ZIO[Any, Nothing, Chunk[Int]] = 
+  ZStream.range(1, 1000000)
+    .filter(_ % 2 == 0)
+    .take(10)
+    .runCollect
+// Only generates elements until 10 are found
+```
+
+## Pattern 8: Measuring Performance
+
+### Timing Operations
+
+```scala
+import zio._
+
+// Measure execution time
+def timed[R, E, A](
+  effect: ZIO[R, E, A]
+): ZIO[R, E, (Duration, A)] = 
+  for {
+    start <- Clock.nanoTime
+    result <- effect
+    end <- Clock.nanoTime
+    duration = Duration.fromNanos(end - start)
+  } yield (duration, result)
+
+// Usage
+val measured: ZIO[Any, Throwable, Unit] = 
+  for {
+    (duration, result) <- timed(expensiveOperation)
+    _ <- ZIO.logInfo(s"Operation took ${duration.toMillis}ms")
+  } yield ()
+```
+
+### Performance Metrics
+
+```scala
+import zio._
+import zio.metrics._
+
+// Track operation latency
+val latencyHistogram = Metric.histogram(
+  "operation_latency_ms",
+  Histogram.Boundaries.linear(0, 10, 100)
+)
+
+def measureLatency[R, E, A](
+  name: String
+)(effect: ZIO[R, E, A]): ZIO[R, E, A] = 
+  for {
+    start <- Clock.nanoTime
+    result <- effect
+    end <- Clock.nanoTime
+    durationMs = (end - start) / 1000000.0
+    _ <- latencyHistogram.tagged("operation", name).update(durationMs)
+  } yield result
+
+// Track throughput
+val throughputCounter = Metric.counter("operations_total")
+
+def trackThroughput[R, E, A](
+  effect: ZIO[R, E, A]
+): ZIO[R, E, A] = 
+  effect.tap(_ => throughputCounter.increment)
+```
+
+<Note>
+Measure first, optimize second. Use metrics to identify actual bottlenecks.
+</Note>
+
+## Pattern 9: Avoiding Common Pitfalls
+
+### Don't Over-Parallelize
+
+```scala
+import zio._
+
+// Bad: Parallelizing CPU-bound work beyond core count
+val overParallel: ZIO[Any, Nothing, List[Int]] = 
+  ZIO.foreachPar(1 to 1000)(cpuIntensiveWork)
+    .withParallelism(1000)
+// Context switching overhead dominates
+
+// Good: Match parallelism to available cores
+val optimal: ZIO[Any, Nothing, List[Int]] = 
+  ZIO.foreachPar(1 to 1000)(cpuIntensiveWork)
+    .withParallelism(Runtime.getRuntime.availableProcessors)
+```
+
+### Avoid Blocking Operations
+
+```scala
+import zio._
+
+// Bad: Blocking the default executor
+val blocking: ZIO[Any, Nothing, String] = 
+  ZIO.succeed {
+    // Blocks a fiber thread!
+    scala.io.Source.fromFile("file.txt").mkString
+  }
+
+// Good: Use blocking executor
+val nonBlocking: ZIO[Any, Throwable, String] = 
+  ZIO.attemptBlocking {
+    scala.io.Source.fromFile("file.txt").mkString
+  }
+// Runs on dedicated blocking thread pool
+```
+
+<Warning>
+Never block fiber threads. Use `attemptBlocking` for blocking I/O operations.
+</Warning>
+
+### Batch Database Operations
+
+```scala
+import zio._
+
+// Bad: N+1 query problem
+val nPlusOne: ZIO[Any, Throwable, List[Order]] = 
+  for {
+    users <- getUsers // 1 query
+    orders <- ZIO.foreach(users) { user =>
+      getOrdersForUser(user.id) // N queries
+    }
+  } yield orders.flatten
+
+// Good: Single query with JOIN
+val optimized: ZIO[Any, Throwable, List[Order]] = 
+  for {
+    users <- getUsers
+    userIds = users.map(_.id)
+    orders <- getOrdersForUsers(userIds) // 1 query
+  } yield orders
+```
+
+## Best Practices Summary
+
+<Note>
+**Key Takeaways:**
+
+1. Use parallel execution (`foreachPar`, `zipPar`) for independent operations
+2. Always bound parallelism with `withParallelism`
+3. Use `Ref`, `Queue`, and `Hub` for efficient concurrent state
+4. Stream large datasets with `ZStream` instead of loading into memory
+5. Batch operations to reduce I/O overhead
+6. Cache expensive computations with appropriate TTL
+7. Use connection pools for database and HTTP clients
+8. Prefer lazy evaluation with `ZIO.suspend` and streams
+9. Measure performance with timing and metrics
+10. Use `attemptBlocking` for blocking I/O
+11. Match parallelism level to workload type (CPU vs I/O)
+12. Minimize allocations by reusing objects and avoiding intermediate collections
+13. Profile before optimizing - measure to find real bottlenecks
+</Note>

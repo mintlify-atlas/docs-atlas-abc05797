@@ -1,0 +1,801 @@
+---
+title: "Migrating from Scala Futures"
+description: "A comprehensive guide to migrating from Scala Futures to ZIO"
+icon: "right-left"
+---
+
+# Migrating from Scala Futures to ZIO
+
+This guide helps you migrate from Scala's `Future` to ZIO. While Futures are convenient for basic async operations, ZIO provides superior type safety, composability, resource management, and error handling. Making this migration will result in more maintainable and reliable code.
+
+## Why Migrate from Futures?
+
+<CardGroup cols={2}>
+  <Card title="Type-Safe Errors" icon="shield-check">
+    Track errors in the type system instead of relying on Try/exceptions
+  </Card>
+  <Card title="Lazy Evaluation" icon="stopwatch">
+    ZIO effects are lazy and composable, unlike eager Futures
+  </Card>
+  <Card title="Resource Safety" icon="lock">
+    Guaranteed cleanup with acquire-release patterns
+  </Card>
+  <Card title="Testability" icon="flask">
+    Better testing with dependency injection and test services
+  </Card>
+  <Card title="No ExecutionContext" icon="microchip">
+    No need to pass ExecutionContext everywhere
+  </Card>
+  <Card title="Cancellation" icon="circle-xmark">
+    Built-in support for cancellation and interruption
+  </Card>
+</CardGroup>
+
+## Key Differences
+
+### Future is Eager, ZIO is Lazy
+
+<CodeGroup>
+```scala Future (Eager)
+import scala.concurrent.{Future, ExecutionContext}
+import ExecutionContext.Implicits.global
+
+// This prints immediately!
+val future: Future[Unit] = Future {
+  println("Side effect happens now!")
+}
+
+// Effect has already started
+future.map(_ => println("Done"))
+```
+
+```scala ZIO (Lazy)
+import zio._
+
+// This does NOT print yet - just a description
+val effect: Task[Unit] = ZIO.attempt {
+  println("Side effect happens on run!")
+}
+
+// Still hasn't run
+val mapped = effect.map(_ => println("Done"))
+
+// Runs when executed
+// Unsafe.unsafe { implicit unsafe =>
+//   Runtime.default.unsafe.run(mapped)
+// }
+```
+</CodeGroup>
+
+### Future Requires ExecutionContext
+
+<CodeGroup>
+```scala Future
+import scala.concurrent.{Future, ExecutionContext}
+import ExecutionContext.Implicits.global
+
+def doWork()(implicit ec: ExecutionContext): Future[Int] = 
+  Future {
+    // computation
+    42
+  }
+
+def process(value: Int)(implicit ec: ExecutionContext): Future[String] = 
+  Future(value.toString)
+
+// ExecutionContext needed everywhere
+val result: Future[String] = 
+  doWork().flatMap(process)
+```
+
+```scala ZIO
+import zio._
+
+// No execution context needed
+def doWork(): Task[Int] = 
+  ZIO.attempt {
+    // computation
+    42
+  }
+
+def process(value: Int): Task[String] = 
+  ZIO.succeed(value.toString)
+
+// Clean composition
+val result: Task[String] = 
+  doWork().flatMap(process)
+```
+</CodeGroup>
+
+## Type Mapping
+
+| Future Type | ZIO Equivalent | Notes |
+|-------------|----------------|-------|
+| `Future[A]` | `Task[A]` or `ZIO[Any, Throwable, A]` | Async computation that may fail |
+| `Future[Unit]` | `Task[Unit]` | Side-effecting computation |
+| `Future.successful(a)` | `ZIO.succeed(a)` | Successful value |
+| `Future.failed(e)` | `ZIO.fail(e)` | Failed computation |
+| `Promise[A]` | `Promise[Throwable, A]` | One-time completion |
+
+## Basic Operations
+
+### Creating Effects
+
+<CodeGroup>
+```scala Future
+import scala.concurrent.{Future, Promise}
+import scala.concurrent.ExecutionContext.Implicits.global
+
+// Successful value
+val success: Future[Int] = Future.successful(42)
+
+// Failed future
+val failed: Future[Int] = 
+  Future.failed(new Exception("Error"))
+
+// Async computation
+val async: Future[Int] = Future {
+  println("Computing...")
+  Thread.sleep(1000)
+  42
+}
+
+// From Try
+import scala.util.{Try, Success, Failure}
+val fromTry: Future[Int] = 
+  Future.fromTry(Success(42))
+
+// Promise
+val promise = Promise[Int]()
+promise.success(42)
+val fromPromise: Future[Int] = promise.future
+```
+
+```scala ZIO
+import zio._
+
+// Successful value
+val success: UIO[Int] = ZIO.succeed(42)
+
+// Failed effect
+val failed: Task[Int] = 
+  ZIO.fail(new Exception("Error"))
+
+// Async computation (lazy!)
+val async: Task[Int] = ZIO.attempt {
+  println("Computing...")
+  Thread.sleep(1000)
+  42
+}
+
+// From Either
+val fromEither: Task[Int] = 
+  ZIO.fromEither(Right(42))
+
+// From Try
+import scala.util.{Try, Success}
+val fromTry: Task[Int] = 
+  ZIO.fromTry(Success(42))
+
+// Promise
+val program: Task[Int] = for {
+  promise <- Promise.make[Throwable, Int]
+  _ <- promise.succeed(42)
+  value <- promise.await
+} yield value
+```
+</CodeGroup>
+
+### Transforming Effects
+
+<CodeGroup>
+```scala Future
+import scala.concurrent.Future
+import scala.concurrent.ExecutionContext.Implicits.global
+
+val future: Future[Int] = Future.successful(42)
+
+// map
+val mapped: Future[String] = 
+  future.map(_.toString)
+
+// flatMap
+val flatMapped: Future[String] = 
+  future.flatMap(n => Future.successful(n.toString))
+
+// for-comprehension
+val result: Future[Int] = for {
+  a <- Future.successful(10)
+  b <- Future.successful(20)
+  c <- Future.successful(a + b)
+} yield c
+
+// filter
+val filtered: Future[Int] = 
+  future.filter(_ > 0)
+```
+
+```scala ZIO
+import zio._
+
+val effect: UIO[Int] = ZIO.succeed(42)
+
+// map
+val mapped: UIO[String] = 
+  effect.map(_.toString)
+
+// flatMap
+val flatMapped: UIO[String] = 
+  effect.flatMap(n => ZIO.succeed(n.toString))
+
+// for-comprehension
+val result: UIO[Int] = for {
+  a <- ZIO.succeed(10)
+  b <- ZIO.succeed(20)
+  c <- ZIO.succeed(a + b)
+} yield c
+
+// filterOrFail
+val filtered: Task[Int] = 
+  effect.filterOrFail(_ > 0)(new Exception("Value too small"))
+```
+</CodeGroup>
+
+### Error Handling
+
+<CodeGroup>
+```scala Future
+import scala.concurrent.Future
+import scala.concurrent.ExecutionContext.Implicits.global
+import scala.util.{Success, Failure}
+
+val future: Future[Int] = Future {
+  throw new Exception("Error!")
+}
+
+// recover
+val recovered: Future[Int] = 
+  future.recover {
+    case _: Exception => 0
+  }
+
+// recoverWith
+val recoveredWith: Future[Int] = 
+  future.recoverWith {
+    case _: Exception => Future.successful(0)
+  }
+
+// transform (handle both success and failure)
+import scala.util.Try
+val transformed: Future[Int] = 
+  future.transform {
+    case Success(value) => Success(value * 2)
+    case Failure(_) => Success(0)
+  }
+
+// fallbackTo
+val fallback: Future[Int] = 
+  future.fallbackTo(Future.successful(0))
+```
+
+```scala ZIO
+import zio._
+
+val effect: Task[Int] = ZIO.attempt {
+  throw new Exception("Error!")
+}
+
+// catchSome
+val recovered: Task[Int] = 
+  effect.catchSome {
+    case _: Exception => ZIO.succeed(0)
+  }
+
+// catchAll
+val recoveredAll: Task[Int] = 
+  effect.catchAll { _ => 
+    ZIO.succeed(0)
+  }
+
+// fold (handle both success and failure)
+val folded: UIO[Int] = 
+  effect.fold(
+    failure = _ => 0,
+    success = value => value * 2
+  )
+
+// orElse
+val fallback: Task[Int] = 
+  effect.orElse(ZIO.succeed(0))
+
+// either (convert to Either)
+val either: UIO[Either[Throwable, Int]] = 
+  effect.either
+```
+</CodeGroup>
+
+## Concurrency
+
+### Sequential vs Parallel
+
+<CodeGroup>
+```scala Future
+import scala.concurrent.Future
+import scala.concurrent.ExecutionContext.Implicits.global
+
+// Sequential (but may run in parallel due to eager evaluation)
+val sequential: Future[(Int, String)] = for {
+  a <- Future { compute1() }
+  b <- Future { compute2() }
+} yield (a, b)
+
+// Explicit parallel
+val parallel: Future[(Int, String)] = {
+  val fa = Future { compute1() }
+  val fb = Future { compute2() }
+  for {
+    a <- fa
+    b <- fb
+  } yield (a, b)
+}
+
+// Using zip
+val zipped: Future[(Int, String)] = {
+  val fa = Future { compute1() }
+  val fb = Future { compute2() }
+  fa.zip(fb)
+}
+
+// Sequence (list of futures to future of list)
+val futures: List[Future[Int]] = 
+  List(1, 2, 3).map(n => Future(n * 2))
+val sequenced: Future[List[Int]] = 
+  Future.sequence(futures)
+```
+
+```scala ZIO
+import zio._
+
+// Sequential (guaranteed due to lazy evaluation)
+val sequential: Task[(Int, String)] = for {
+  a <- ZIO.attempt(compute1())
+  b <- ZIO.attempt(compute2())
+} yield (a, b)
+
+// Explicit parallel
+val parallel: Task[(Int, String)] = 
+  ZIO.attempt(compute1()).zipPar(ZIO.attempt(compute2()))
+
+// CollectAllPar (parallel)
+val effects: List[Task[Int]] = 
+  List(1, 2, 3).map(n => ZIO.attempt(n * 2))
+val collected: Task[List[Int]] = 
+  ZIO.collectAllPar(effects)
+
+// foreachPar
+val foreachPar: Task[List[Int]] = 
+  ZIO.foreachPar(List(1, 2, 3))(n => ZIO.attempt(n * 2))
+```
+</CodeGroup>
+
+### Racing
+
+<CodeGroup>
+```scala Future
+import scala.concurrent.Future
+import scala.concurrent.ExecutionContext.Implicits.global
+
+val future1: Future[Int] = Future {
+  Thread.sleep(1000)
+  1
+}
+
+val future2: Future[Int] = Future {
+  Thread.sleep(500)
+  2
+}
+
+// First to complete wins (need external library)
+// or manual implementation with Promise
+import scala.concurrent.Promise
+def race[A](fa: Future[A], fb: Future[A]): Future[A] = {
+  val promise = Promise[A]()
+  fa.foreach(promise.trySuccess)
+  fb.foreach(promise.trySuccess)
+  promise.future
+}
+
+val raced: Future[Int] = race(future1, future2)
+```
+
+```scala ZIO
+import zio._
+
+val effect1: Task[Int] = ZIO.attempt {
+  Thread.sleep(1000)
+  1
+}
+
+val effect2: Task[Int] = ZIO.attempt {
+  Thread.sleep(500)
+  2
+}
+
+// Built-in race
+val raced: Task[Int] = 
+  effect1.race(effect2)
+
+// Race with Either result
+val racedEither: Task[Either[Int, Int]] = 
+  effect1.raceEither(effect2)
+
+// Race all (first to succeed)
+val raceAll: Task[Int] = 
+  ZIO.raceAll(effect1, List(effect2))
+```
+</CodeGroup>
+
+## Timeouts and Delays
+
+<CodeGroup>
+```scala Future
+import scala.concurrent.{Future, Promise}
+import scala.concurrent.ExecutionContext.Implicits.global
+import scala.concurrent.duration._
+import java.util.concurrent.TimeoutException
+
+// Delay (need to use Thread.sleep or Akka)
+val delayed: Future[Int] = Future {
+  Thread.sleep(1000)
+  42
+}
+
+// Timeout (need external library or manual implementation)
+import scala.concurrent.duration._
+import scala.concurrent.Await
+
+def withTimeout[A](future: Future[A], timeout: Duration): Future[A] = {
+  val promise = Promise[A]()
+  val timer = new java.util.Timer()
+  val task = new java.util.TimerTask {
+    def run() = promise.tryFailure(new TimeoutException())
+  }
+  timer.schedule(task, timeout.toMillis)
+  
+  future.onComplete { result =>
+    timer.cancel()
+    promise.tryComplete(result)
+  }
+  
+  promise.future
+}
+
+val timedOut: Future[Int] = 
+  withTimeout(delayed, 500.millis)
+```
+
+```scala ZIO
+import zio._
+
+// Delay
+val delayed: Task[Int] = 
+  ZIO.sleep(1.second) *> ZIO.succeed(42)
+
+// Timeout (returns Option)
+val timedOut: Task[Option[Int]] = 
+  ZIO.attempt(longOperation()).timeout(500.millis)
+
+// Timeout with fallback
+val timedOutOrElse: Task[Int] = 
+  ZIO.attempt(longOperation())
+    .timeoutTo(0)(identity)(500.millis)
+
+// Timeout and fail
+val timedOutFail: Task[Int] = 
+  ZIO.attempt(longOperation())
+    .timeoutFail(new TimeoutException())(500.millis)
+```
+</CodeGroup>
+
+## Resource Management
+
+<CodeGroup>
+```scala Future
+import scala.concurrent.{Future, ExecutionContext}
+import ExecutionContext.Implicits.global
+import java.io._
+
+// Manual resource management (error-prone!)
+def readFile(path: String): Future[String] = {
+  val stream = new FileInputStream(path)
+  Future {
+    try {
+      val reader = new BufferedReader(new InputStreamReader(stream))
+      Iterator.continually(reader.readLine())
+        .takeWhile(_ != null)
+        .mkString("\n")
+    } finally {
+      stream.close() // May not run if Future is cancelled!
+    }
+  }
+}
+
+// Using try-catch (still error-prone)
+def readFileSafer(path: String): Future[String] = {
+  Future {
+    val stream = new FileInputStream(path)
+    try {
+      val reader = new BufferedReader(new InputStreamReader(stream))
+      Iterator.continually(reader.readLine())
+        .takeWhile(_ != null)
+        .mkString("\n")
+    } catch {
+      case e: Exception =>
+        stream.close()
+        throw e
+    } finally {
+      stream.close()
+    }
+  }
+}
+```
+
+```scala ZIO
+import zio._
+import java.io._
+
+// Guaranteed resource cleanup
+def readFile(path: String): Task[String] = {
+  ZIO.acquireReleaseWith(
+    ZIO.attempt(new FileInputStream(path))
+  )(
+    stream => ZIO.succeed(stream.close())
+  ) { stream =>
+    ZIO.attempt {
+      val reader = new BufferedReader(new InputStreamReader(stream))
+      Iterator.continually(reader.readLine())
+        .takeWhile(_ != null)
+        .mkString("\n")
+    }
+  }
+}
+
+// Even simpler with scoped
+def readFileScoped(path: String): Task[String] = 
+  ZIO.scoped {
+    ZIO.fromAutoCloseable(ZIO.attempt(new FileInputStream(path))).flatMap { stream =>
+      ZIO.attempt {
+        val reader = new BufferedReader(new InputStreamReader(stream))
+        Iterator.continually(reader.readLine())
+          .takeWhile(_ != null)
+          .mkString("\n")
+      }
+    }
+  }
+```
+</CodeGroup>
+
+## Converting Between Future and ZIO
+
+### Future to ZIO
+
+<CodeGroup>
+```scala Basic Conversion
+import scala.concurrent.{Future, ExecutionContext}
+import ExecutionContext.Implicits.global
+import zio._
+
+// Existing Future-based code
+def legacyApi(): Future[String] = 
+  Future.successful("result")
+
+// Convert to ZIO
+val zioEffect: Task[String] = 
+  ZIO.fromFuture(implicit ec => legacyApi())
+
+// In a for-comprehension
+val program: Task[String] = for {
+  result <- ZIO.fromFuture(implicit ec => legacyApi())
+  processed <- ZIO.succeed(result.toUpperCase)
+} yield processed
+```
+
+```scala With Error Handling
+import zio._
+import scala.concurrent.Future
+
+def riskyApi(): Future[Int] = 
+  Future.failed(new Exception("API Error"))
+
+// Converts Future failures to ZIO failures
+val converted: Task[Int] = 
+  ZIO.fromFuture(implicit ec => riskyApi())
+
+// Handle the error
+val handled: Task[Int] = 
+  converted.catchAll { error =>
+    Console.printLine(s"Error: $error").orDie *>
+    ZIO.succeed(0)
+  }
+```
+</CodeGroup>
+
+### ZIO to Future
+
+<CodeGroup>
+```scala Basic Conversion
+import zio._
+import scala.concurrent.Future
+
+val zioEffect: Task[String] = 
+  ZIO.succeed("Hello, ZIO!")
+
+// Convert to Future (unsafe!)
+val future: Future[String] = 
+  Unsafe.unsafe { implicit unsafe =>
+    Runtime.default.unsafe.runToFuture(zioEffect)
+  }
+```
+
+```scala In Application
+import zio._
+
+// If you must interop with Future-based code
+object MyService {
+  def compute(): Task[Int] = 
+    ZIO.succeed(42)
+  
+  // Expose as Future for legacy code
+  def computeFuture(): Future[Int] = 
+    Unsafe.unsafe { implicit unsafe =>
+      Runtime.default.unsafe.runToFuture(compute())
+    }
+}
+```
+</CodeGroup>
+
+## Application Entry Point
+
+<CodeGroup>
+```scala Future
+import scala.concurrent.{Future, Await}
+import scala.concurrent.ExecutionContext.Implicits.global
+import scala.concurrent.duration._
+
+object MyApp extends App {
+  val program: Future[Unit] = for {
+    _ <- Future(println("Starting..."))
+    result <- doWork()
+    _ <- Future(println(s"Result: $result"))
+  } yield ()
+  
+  // Block and wait for completion
+  Await.result(program, Duration.Inf)
+  
+  def doWork(): Future[Int] = 
+    Future { 42 }
+}
+```
+
+```scala ZIO
+import zio._
+
+object MyApp extends ZIOAppDefault {
+  def run = for {
+    _ <- Console.printLine("Starting...")
+    result <- doWork()
+    _ <- Console.printLine(s"Result: $result")
+  } yield ()
+  
+  def doWork(): Task[Int] = 
+    ZIO.succeed(42)
+}
+```
+</CodeGroup>
+
+## Migration Strategy
+
+<Steps>
+  <Step title="Start at boundaries">
+    Begin converting at application boundaries (main, HTTP endpoints, database access) rather than deep in business logic.
+  </Step>
+  
+  <Step title="Use ZIO.fromFuture">
+    Wrap existing Future-based APIs with `ZIO.fromFuture` to gradually migrate:
+    ```scala
+    def legacyService(): Future[Result] = ???
+    
+    def newService(): Task[Result] = 
+      ZIO.fromFuture(implicit ec => legacyService())
+    ```
+  </Step>
+  
+  <Step title="Convert one module at a time">
+    Pick a module, convert all its Futures to ZIO, then move to the next module.
+  </Step>
+  
+  <Step title="Replace ExecutionContext">
+    Remove ExecutionContext implicits as you convert - ZIO doesn't need them.
+  </Step>
+  
+  <Step title="Add proper error handling">
+    Use ZIO's typed errors to make error handling explicit and type-safe.
+  </Step>
+  
+  <Step title="Introduce ZLayer">
+    Once core effects are converted, add ZLayer for dependency injection.
+  </Step>
+</Steps>
+
+## Common Patterns
+
+### Retry Logic
+
+<CodeGroup>
+```scala Future
+import scala.concurrent.{Future, ExecutionContext}
+import ExecutionContext.Implicits.global
+import scala.util.{Success, Failure}
+
+def retry[A](future: => Future[A], times: Int): Future[A] = {
+  future.recoverWith {
+    case _ if times > 0 => 
+      retry(future, times - 1)
+  }
+}
+
+val retried: Future[Int] = 
+  retry(Future { riskyOperation() }, 3)
+```
+
+```scala ZIO
+import zio._
+
+val retried: Task[Int] = 
+  ZIO.attempt(riskyOperation())
+    .retry(Schedule.recurs(3))
+
+// With exponential backoff
+val retriedWithBackoff: Task[Int] = 
+  ZIO.attempt(riskyOperation())
+    .retry(Schedule.exponential(1.second) && Schedule.recurs(5))
+```
+</CodeGroup>
+
+### Combining Multiple Effects
+
+<CodeGroup>
+```scala Future
+import scala.concurrent.Future
+import scala.concurrent.ExecutionContext.Implicits.global
+
+val results: Future[List[Int]] = {
+  val futures = (1 to 10).map(n => Future(compute(n)))
+  Future.sequence(futures.toList)
+}
+```
+
+```scala ZIO
+import zio._
+
+val results: Task[List[Int]] = 
+  ZIO.foreachPar(1 to 10)(n => ZIO.attempt(compute(n)))
+```
+</CodeGroup>
+
+## Additional Resources
+
+<CardGroup cols={2}>
+  <Card title="ZIO Documentation" icon="book" href="/core/zio-effect">
+    Learn more about ZIO core concepts
+  </Card>
+  <Card title="Error Handling" icon="triangle-exclamation" href="/core/error-handling">
+    Master ZIO's error handling
+  </Card>
+  <Card title="Resource Management" icon="lock" href="/core/resource-management">
+    Learn safe resource handling
+  </Card>
+  <Card title="Testing Guide" icon="flask" href="/testing/overview">
+    Test your ZIO applications
+  </Card>
+</CardGroup>

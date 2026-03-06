@@ -1,0 +1,266 @@
+---
+title: Hub[A]
+description: API reference for ZIO's Hub pub-sub message hub
+---
+
+## Overview
+
+A `Hub[A]` is an asynchronous message hub that supports multiple publishers and subscribers. Publishers can publish messages to the hub and subscribers can subscribe to receive messages from the hub. Unlike a queue, all subscribers receive all messages published after they subscribe.
+
+## Type Signature
+
+```scala
+sealed abstract class Hub[A] extends Enqueue[A]
+```
+
+<ParamField path="A" type="type">
+  The type of messages in the hub
+</ParamField>
+
+## Constructors
+
+### bounded
+
+Creates a bounded hub with back pressure strategy. The hub retains messages until taken by all subscribers.
+
+```scala
+def bounded[A](requestedCapacity: => Int)(implicit trace: Trace): UIO[Hub[A]]
+```
+
+<ParamField path="requestedCapacity" type="Int">
+  The capacity of the hub. Use power of 2 for best performance.
+</ParamField>
+
+### unbounded
+
+Creates an unbounded hub.
+
+```scala
+def unbounded[A](implicit trace: Trace): UIO[Hub[A]]
+```
+
+### dropping
+
+Creates a bounded hub with dropping strategy. New messages are dropped when at capacity.
+
+```scala
+def dropping[A](requestedCapacity: => Int)(implicit trace: Trace): UIO[Hub[A]]
+```
+
+<ParamField path="requestedCapacity" type="Int">
+  The capacity of the hub
+</ParamField>
+
+### sliding
+
+Creates a bounded hub with sliding strategy. Old messages are dropped when at capacity.
+
+```scala
+def sliding[A](requestedCapacity: => Int)(implicit trace: Trace): UIO[Hub[A]]
+```
+
+<ParamField path="requestedCapacity" type="Int">
+  The capacity of the hub
+</ParamField>
+
+## Key Methods
+
+### publish
+
+Publishes a message to the hub.
+
+```scala
+def publish(a: A)(implicit trace: Trace): UIO[Boolean]
+```
+
+<ParamField path="a" type="A">
+  The message to publish
+</ParamField>
+
+**Returns:** `true` if the message was successfully published
+
+### publishAll
+
+Publishes all specified messages to the hub.
+
+```scala
+def publishAll[A1 <: A](as: Iterable[A1])(implicit trace: Trace): UIO[Chunk[A1]]
+```
+
+<ParamField path="as" type="Iterable[A1]">
+  The messages to publish
+</ParamField>
+
+**Returns:** Any messages that could not be published
+
+### subscribe
+
+Subscribes to receive messages from the hub. Returns a scoped `Dequeue` for consuming messages.
+
+```scala
+def subscribe(implicit trace: Trace): ZIO[Scope, Nothing, Dequeue[A]]
+```
+
+**Returns:** A dequeue for taking messages
+
+### capacity
+
+Returns the capacity of the hub.
+
+```scala
+def capacity: Int
+```
+
+### size
+
+Returns the current size of the hub.
+
+```scala
+def size(implicit trace: Trace): UIO[Int]
+```
+
+### isEmpty
+
+Checks whether the hub is currently empty.
+
+```scala
+def isEmpty(implicit trace: Trace): UIO[Boolean]
+```
+
+### isFull
+
+Checks whether the hub is currently full.
+
+```scala
+def isFull(implicit trace: Trace): UIO[Boolean]
+```
+
+### shutdown
+
+Shuts down the hub, interrupting all subscribers.
+
+```scala
+def shutdown(implicit trace: Trace): UIO[Unit]
+```
+
+### awaitShutdown
+
+Waits until the hub is shut down.
+
+```scala
+def awaitShutdown(implicit trace: Trace): UIO[Unit]
+```
+
+## Examples
+
+### Basic Pub-Sub
+
+```scala
+import zio._
+
+val program = ZIO.scoped {
+  for {
+    hub         <- Hub.bounded[String](10)
+    subscriber1 <- hub.subscribe
+    subscriber2 <- hub.subscribe
+    _           <- hub.publish("Hello")
+    msg1        <- subscriber1.take
+    msg2        <- subscriber2.take
+  } yield (msg1, msg2)
+}
+// result: ("Hello", "Hello")
+```
+
+### Multiple Publishers
+
+```scala
+val program = ZIO.scoped {
+  for {
+    hub        <- Hub.bounded[Int](100)
+    subscriber <- hub.subscribe
+    _          <- hub.publish(1).fork
+    _          <- hub.publish(2).fork
+    _          <- hub.publish(3).fork
+    values     <- subscriber.takeUpTo(3)
+  } yield values
+}
+```
+
+### Broadcasting to Multiple Subscribers
+
+```scala
+val program = ZIO.scoped {
+  for {
+    hub         <- Hub.bounded[String](10)
+    subscriber1 <- hub.subscribe
+    subscriber2 <- hub.subscribe
+    subscriber3 <- hub.subscribe
+    _           <- hub.publishAll(List("A", "B", "C"))
+    msgs1       <- subscriber1.takeAll
+    msgs2       <- subscriber2.takeAll
+    msgs3       <- subscriber3.takeAll
+  } yield (msgs1, msgs2, msgs3)
+}
+// result: all three subscribers receive Chunk("A", "B", "C")
+```
+
+### Late Subscribers
+
+```scala
+val program = ZIO.scoped {
+  for {
+    hub         <- Hub.bounded[Int](10)
+    _           <- hub.publishAll(List(1, 2, 3))
+    subscriber  <- hub.subscribe
+    _           <- hub.publish(4)
+    messages    <- subscriber.takeAll
+  } yield messages
+}
+// result: Chunk(4) - late subscriber only receives messages published after subscription
+```
+
+### Dropping Strategy
+
+```scala
+val program = ZIO.scoped {
+  for {
+    hub        <- Hub.dropping[Int](2)
+    subscriber <- hub.subscribe
+    _          <- hub.publishAll(List(1, 2, 3, 4, 5))
+    messages   <- subscriber.takeAll
+  } yield messages
+}
+// result: Chunk(1, 2) - excess messages dropped
+```
+
+### Sliding Strategy
+
+```scala
+val program = ZIO.scoped {
+  for {
+    hub        <- Hub.sliding[Int](2)
+    subscriber <- hub.subscribe
+    _          <- hub.publishAll(List(1, 2, 3, 4, 5))
+    messages   <- subscriber.takeAll
+  } yield messages
+}
+// result: Chunk(4, 5) - old messages dropped
+```
+
+### Unsubscribing
+
+```scala
+val program = for {
+  hub <- Hub.bounded[String](10)
+  result <- ZIO.scoped {
+    for {
+      subscriber <- hub.subscribe
+      _          <- hub.publish("Message 1")
+      msg1       <- subscriber.take
+    } yield msg1
+  }
+  // subscriber automatically unsubscribed when scope closes
+  _ <- hub.publish("Message 2")
+} yield result
+// result: "Message 1"
+```

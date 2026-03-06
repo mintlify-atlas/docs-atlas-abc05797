@@ -1,0 +1,263 @@
+---
+title: Semaphore
+description: API reference for ZIO's Semaphore concurrency control
+---
+
+## Overview
+
+An asynchronous semaphore is a generalization of a mutex. Semaphores have a certain number of permits, which can be held and released concurrently by different parties. Attempts to acquire more permits than available result in the acquiring fiber being suspended until the specified number of permits become available.
+
+## Type Signature
+
+```scala
+sealed trait Semaphore extends Serializable
+```
+
+## Constructors
+
+### make
+
+Creates a new `Semaphore` with the specified number of permits.
+
+```scala
+def make(permits: => Long)(implicit trace: Trace): UIO[Semaphore]
+```
+
+<ParamField path="permits" type="Long">
+  The initial number of permits
+</ParamField>
+
+## Key Methods
+
+### withPermit
+
+Executes a workflow, acquiring a permit before execution and releasing it after.
+
+```scala
+def withPermit[R, E, A](zio: ZIO[R, E, A])(implicit trace: Trace): ZIO[R, E, A]
+```
+
+<ParamField path="zio" type="ZIO[R, E, A]">
+  The workflow to execute with a permit
+</ParamField>
+
+**Returns:** The result of the workflow
+
+### withPermits
+
+Executes a workflow, acquiring the specified number of permits before execution and releasing them after.
+
+```scala
+def withPermits[R, E, A](n: Long)(zio: ZIO[R, E, A])(implicit trace: Trace): ZIO[R, E, A]
+```
+
+<ParamField path="n" type="Long">
+  The number of permits to acquire
+</ParamField>
+
+<ParamField path="zio" type="ZIO[R, E, A]">
+  The workflow to execute
+</ParamField>
+
+### withPermitScoped
+
+Returns a scoped workflow that acquires a permit as the acquire action and releases it as the release action.
+
+```scala
+def withPermitScoped(implicit trace: Trace): ZIO[Scope, Nothing, Unit]
+```
+
+### withPermitsScoped
+
+Returns a scoped workflow that acquires the specified number of permits and releases them when the scope is closed.
+
+```scala
+def withPermitsScoped(n: Long)(implicit trace: Trace): ZIO[Scope, Nothing, Unit]
+```
+
+<ParamField path="n" type="Long">
+  The number of permits to acquire
+</ParamField>
+
+### tryWithPermit
+
+Executes the effect if a permit is available, returning `None` if no permit was available.
+
+```scala
+def tryWithPermit[R, E, A](zio: ZIO[R, E, A])(implicit trace: Trace): ZIO[R, E, Option[A]]
+```
+
+<ParamField path="zio" type="ZIO[R, E, A]">
+  The workflow to execute
+</ParamField>
+
+**Returns:** `Some(result)` if a permit was available, `None` otherwise
+
+### tryWithPermits
+
+Executes the effect if the specified number of permits are available, returning `None` if permits were not available.
+
+```scala
+def tryWithPermits[R, E, A](n: Long)(zio: ZIO[R, E, A])(implicit trace: Trace): ZIO[R, E, Option[A]]
+```
+
+<ParamField path="n" type="Long">
+  The number of permits to try to acquire
+</ParamField>
+
+### available
+
+Returns the number of available permits.
+
+```scala
+def available(implicit trace: Trace): UIO[Long]
+```
+
+**Returns:** The number of available permits
+
+### awaiting
+
+Returns the number of tasks currently waiting for permits.
+
+```scala
+def awaiting(implicit trace: Trace): UIO[Long]
+```
+
+**Returns:** The number of waiting tasks
+
+## Examples
+
+### Basic Semaphore
+
+```scala
+import zio._
+
+val program = for {
+  semaphore <- Semaphore.make(1)
+  result    <- semaphore.withPermit {
+                 ZIO.succeed("Critical section")
+               }
+} yield result
+// result: "Critical section"
+```
+
+### Limiting Concurrent Access
+
+```scala
+val program = for {
+  semaphore <- Semaphore.make(3)
+  // Only 3 tasks can run concurrently
+  results   <- ZIO.foreachPar(1 to 10) { i =>
+                 semaphore.withPermit {
+                   ZIO.succeed(i) <* ZIO.sleep(1.second)
+                 }
+               }
+} yield results
+```
+
+### Multiple Permits
+
+```scala
+val program = for {
+  semaphore <- Semaphore.make(10)
+  result    <- semaphore.withPermits(5) {
+                 ZIO.succeed("Using 5 permits")
+               }
+  available <- semaphore.available
+} yield (result, available)
+// result: ("Using 5 permits", 10)
+```
+
+### Try Acquire
+
+```scala
+val program = for {
+  semaphore <- Semaphore.make(1)
+  _         <- semaphore.withPermit(ZIO.sleep(10.seconds)).fork
+  _         <- ZIO.sleep(100.millis)
+  result    <- semaphore.tryWithPermit {
+                 ZIO.succeed("Got permit")
+               }
+} yield result
+// result: None (no permit available)
+```
+
+### Resource Pool
+
+```scala
+case class Connection(id: Int)
+
+def useConnection(conn: Connection): Task[String] =
+  ZIO.succeed(s"Used connection ${conn.id}")
+
+val program = for {
+  pool      <- Semaphore.make(5)  // Max 5 concurrent connections
+  results   <- ZIO.foreachPar(1 to 20) { i =>
+                 pool.withPermit {
+                   val conn = Connection(i)
+                   useConnection(conn)
+                 }
+               }
+} yield results
+```
+
+### Rate Limiting
+
+```scala
+val program = for {
+  rateLimiter <- Semaphore.make(10)  // 10 requests at a time
+  results     <- ZIO.foreachPar(1 to 100) { i =>
+                   rateLimiter.withPermit {
+                     ZIO.succeed(s"Request $i") <* ZIO.sleep(100.millis)
+                   }
+                 }
+} yield results
+```
+
+### Scoped Permit
+
+```scala
+val program = ZIO.scoped {
+  for {
+    semaphore <- Semaphore.make(1)
+    _         <- semaphore.withPermitScoped
+    result    <- ZIO.succeed("Work with permit")
+    // permit automatically released when scope closes
+  } yield result
+}
+```
+
+### Monitoring Permits
+
+```scala
+val program = for {
+  semaphore <- Semaphore.make(5)
+  available1 <- semaphore.available
+  awaiting1  <- semaphore.awaiting
+  _          <- semaphore.withPermits(3) {
+                  ZIO.sleep(1.second)
+                }.fork
+  _          <- ZIO.sleep(100.millis)
+  available2 <- semaphore.available
+  awaiting2  <- semaphore.awaiting
+} yield (available1, awaiting1, available2, awaiting2)
+// result: (5, 0, 2, 0)
+```
+
+### Mutex Pattern
+
+```scala
+// Semaphore with 1 permit acts as a mutex
+val program = for {
+  mutex <- Semaphore.make(1)
+  ref   <- Ref.make(0)
+  fibers <- ZIO.foreach(1 to 100) { _ =>
+              mutex.withPermit {
+                ref.updateAndGet(_ + 1)
+              }.fork
+            }
+  _      <- ZIO.foreach(fibers)(_.join)
+  result <- ref.get
+} yield result
+// result: 100 (no race conditions)
+```

@@ -1,0 +1,456 @@
+---
+title: ZChannel
+description: ZChannel is the low-level primitive that powers ZIO Streams
+---
+
+## Overview
+
+`ZChannel[Env, InErr, InElem, InDone, OutErr, OutElem, OutDone]` is a nexus of I/O operations that supports both reading and writing. Channels are the foundation of ZIO Streams - both `ZStream` and `ZSink` are built on top of channels.
+
+<Warning>
+  Most users should use `ZStream`, `ZSink`, and `ZPipeline` instead of channels directly. Channels are a low-level primitive for building custom stream operators and advanced streaming abstractions.
+</Warning>
+
+Channels provide:
+- **Bidirectional I/O**: Both read and write operations
+- **Composability**: Multiple ways to combine channels
+- **Resource safety**: Automatic cleanup of resources
+- **Fine-grained control**: Low-level control over streaming behavior
+
+## Type Parameters
+
+<ParamField path="Env" type="type">
+  Environment required to run the channel
+</ParamField>
+
+<ParamField path="InErr" type="type">
+  Type of upstream errors the channel may observe
+</ParamField>
+
+<ParamField path="InElem" type="type">
+  Type of elements read from upstream
+</ParamField>
+
+<ParamField path="InDone" type="type">
+  Type of upstream's terminal value
+</ParamField>
+
+<ParamField path="OutErr" type="type">
+  Type of errors this channel may produce
+</ParamField>
+
+<ParamField path="OutElem" type="type">
+  Type of elements this channel emits
+</ParamField>
+
+<ParamField path="OutDone" type="type">
+  Type of this channel's terminal value
+</ParamField>
+
+## When to Use Channels
+
+Use channels when you need to:
+- Build custom stream operators not provided by ZStream/ZSink
+- Implement complex bidirectional streaming protocols
+- Create highly optimized streaming primitives
+- Have fine-grained control over resource management in streams
+
+<Note>
+  For most use cases, `ZStream`, `ZSink`, and `ZPipeline` provide better ergonomics and are recommended over direct channel usage.
+</Note>
+
+## Creating Channels
+
+### Basic Channels
+
+```scala
+import zio._
+import zio.stream._
+
+// Succeed with a value
+val succeed: ZChannel[Any, Any, Any, Any, Nothing, Nothing, Int] = 
+  ZChannel.succeed(42)
+
+// Fail with an error
+val fail: ZChannel[Any, Any, Any, Any, String, Nothing, Nothing] = 
+  ZChannel.fail("Error occurred")
+
+// From ZIO effect
+val fromZIO: ZChannel[Any, Any, Any, Any, IOException, Nothing, String] = 
+  ZChannel.fromZIO(Console.readLine)
+
+// Identity channel (passes through)
+val identity: ZChannel[Any, Nothing, Int, Any, Nothing, Int, Any] = 
+  ZChannel.identity
+```
+
+### Reading and Writing
+
+```scala
+// Read from upstream
+val reader: ZChannel[Any, String, Int, Any, String, Nothing, Int] = 
+  ZChannel.read[String, Int]
+
+// Write to downstream
+val writer: ZChannel[Any, Any, Any, Any, Nothing, String, Unit] = 
+  ZChannel.write("Hello")
+
+// Write a chunk
+val writeChunk: ZChannel[Any, Any, Any, Any, Nothing, Int, Unit] = 
+  ZChannel.writeChunk(Chunk(1, 2, 3, 4, 5))
+```
+
+### Reading with Handlers
+
+```scala
+// Read with success/failure/done handlers
+val handler: ZChannel[Any, String, Int, String, String, Int, Unit] = 
+  ZChannel.readWith(
+    // On input element
+    (elem: Int) => ZChannel.write(elem * 2),
+    // On upstream error
+    (error: String) => ZChannel.fail(error),
+    // On upstream done
+    (done: String) => ZChannel.succeed(())
+  )
+
+// Read with cause handler
+val causeHandler = ZChannel.readWithCause(
+  (elem: Int) => ZChannel.write(elem),
+  (cause: Cause[String]) => ZChannel.refailCause(cause),
+  (done: Unit) => ZChannel.unit
+)
+```
+
+## Channel Composition
+
+### Piping Channels
+
+```scala
+val channel1: ZChannel[Any, Any, Any, Any, Nothing, Int, Unit] = 
+  ZChannel.writeChunk(Chunk(1, 2, 3))
+
+val channel2: ZChannel[Any, Nothing, Int, Any, Nothing, String, Unit] = 
+  ZChannel.identity[Nothing, Int, Any].mapOut(_.toString)
+
+// Pipe channel1's output into channel2's input
+val piped = channel1 >>> channel2
+// Or equivalently
+val piped2 = channel1.pipeTo(channel2)
+```
+
+### Sequential Composition
+
+```scala
+val ch1 = ZChannel.write("first")
+val ch2 = ZChannel.write("second")
+
+// Run ch1 then ch2
+val sequential = ch1 *> ch2
+
+// Run ch1, ignore result, then ch2
+val flatMapped = ch1.flatMap(_ => ch2)
+```
+
+### Concurrent Composition
+
+```scala
+val left: ZChannel[Any, Any, Any, Any, String, Int, String] = ???
+val right: ZChannel[Any, Any, Any, Any, String, Int, String] = ???
+
+// Merge two channels
+val merged = left.mergeWith(right)(
+  // What to do when left completes first
+  leftDone = exit => ZChannel.MergeDecision.done(exit),
+  // What to do when right completes first  
+  rightDone = exit => ZChannel.MergeDecision.done(exit)
+)
+```
+
+## Transforming Channels
+
+### Mapping
+
+```scala
+val channel: ZChannel[Any, Any, Any, Any, Nothing, Int, String] = ???
+
+// Map the terminal value
+val mapped = channel.map(_.toUpperCase)
+
+// Map with effect
+val mappedZIO = channel.mapZIO { s =>
+  Console.printLine(s).as(s.toUpperCase)
+}
+
+// Map output elements
+val mapOut = channel.mapOut[Int, String](_.toString)
+
+// Map with error handling
+val mapError = channel.mapError(_.getMessage)
+```
+
+### Collecting
+
+```scala
+// Collect output with partial function
+val collected = channel.collect[Int, Int] {
+  case n if n % 2 == 0 => n * 2
+}
+
+// Collect elements and flatten
+val concatMap = channel.concatMap[Any, Nothing, Int, Any, Nothing, String, Any] { n =>
+  ZChannel.writeChunk(Chunk.fill(n)("x"))
+}
+```
+
+## Resource Management
+
+```scala
+// Ensure cleanup
+val withCleanup = channel.ensuring(
+  Console.printLine("Cleaning up").orDie
+)
+
+// Ensure with exit value
+val withCleanupExit = channel.ensuringWith { exit =>
+  exit match {
+    case Exit.Success(value) => 
+      Console.printLine(s"Success: $value").orDie
+    case Exit.Failure(cause) => 
+      Console.printLine(s"Failed: $cause").orDie
+  }
+}
+```
+
+## Error Handling
+
+```scala
+val channel: ZChannel[Any, Any, Any, Any, String, Int, String] = ???
+
+// Catch all errors
+val recovered = channel.catchAll { error =>
+  ZChannel.write(-1) *> ZChannel.succeed("recovered")
+}
+
+// Catch all causes
+val recoveredCause = channel.catchAllCause { cause =>
+  ZChannel.succeed("recovered from: " + cause.prettyPrint)
+}
+
+// Retry
+val retried = channel.orElse(channel.orElse(channel))
+```
+
+## Building Stream Operators
+
+### Custom Map Operator
+
+```scala
+def customMap[R, E, A, B](
+  f: A => B
+): ZChannel[R, E, Chunk[A], Any, E, Chunk[B], Any] = {
+  lazy val loop: ZChannel[R, E, Chunk[A], Any, E, Chunk[B], Any] =
+    ZChannel.readWithCause(
+      // Read chunk, transform, write, repeat
+      (chunk: Chunk[A]) => 
+        ZChannel.write(chunk.map(f)) *> loop,
+      // Propagate errors
+      (cause: Cause[E]) => 
+        ZChannel.refailCause(cause),
+      // Propagate done
+      (done: Any) => 
+        ZChannel.succeed(done)
+    )
+  loop
+}
+```
+
+### Custom Filter Operator
+
+```scala
+def customFilter[R, E, A](
+  predicate: A => Boolean
+): ZChannel[R, E, Chunk[A], Any, E, Chunk[A], Any] = {
+  lazy val loop: ZChannel[R, E, Chunk[A], Any, E, Chunk[A], Any] =
+    ZChannel.readWithCause(
+      (chunk: Chunk[A]) => {
+        val filtered = chunk.filter(predicate)
+        if (filtered.isEmpty) loop
+        else ZChannel.write(filtered) *> loop
+      },
+      (cause: Cause[E]) => ZChannel.refailCause(cause),
+      (done: Any) => ZChannel.succeed(done)
+    )
+  loop
+}
+```
+
+### Custom Take Operator
+
+```scala
+def customTake[R, E, A](
+  n: Int
+): ZChannel[R, E, Chunk[A], Any, E, Chunk[A], Any] = {
+  def loop(remaining: Int): ZChannel[R, E, Chunk[A], Any, E, Chunk[A], Any] =
+    if (remaining <= 0) ZChannel.unit
+    else
+      ZChannel.readWithCause(
+        (chunk: Chunk[A]) => {
+          if (chunk.size <= remaining) {
+            ZChannel.write(chunk) *> loop(remaining - chunk.size)
+          } else {
+            val (taken, _) = chunk.splitAt(remaining)
+            ZChannel.write(taken)
+          }
+        },
+        (cause: Cause[E]) => ZChannel.refailCause(cause),
+        (_: Any) => ZChannel.unit
+      )
+  loop(n)
+}
+```
+
+## Advanced Patterns
+
+### Stateful Channel
+
+```scala
+def statefulChannel[S, A, B](
+  initial: S
+)(f: (S, A) => (S, B)): ZChannel[Any, Nothing, Chunk[A], Any, Nothing, Chunk[B], Unit] = {
+  def loop(state: S): ZChannel[Any, Nothing, Chunk[A], Any, Nothing, Chunk[B], Unit] =
+    ZChannel.readWithCause(
+      (chunk: Chunk[A]) => {
+        val (newState, output) = chunk.foldLeft((state, Chunk.empty[B])) {
+          case ((s, out), a) =>
+            val (s2, b) = f(s, a)
+            (s2, out :+ b)
+        }
+        ZChannel.write(output) *> loop(newState)
+      },
+      (cause: Cause[Nothing]) => ZChannel.refailCause(cause),
+      (_: Any) => ZChannel.unit
+    )
+  loop(initial)
+}
+```
+
+### Buffering Channel
+
+```scala
+def bufferingChannel[A](
+  bufferSize: Int
+): ZChannel[Any, Nothing, Chunk[A], Any, Nothing, Chunk[A], Unit] = {
+  def loop(
+    buffer: Chunk[A]
+  ): ZChannel[Any, Nothing, Chunk[A], Any, Nothing, Chunk[A], Unit] =
+    if (buffer.size >= bufferSize) {
+      ZChannel.write(buffer) *> loop(Chunk.empty)
+    } else {
+      ZChannel.readWithCause(
+        (chunk: Chunk[A]) => loop(buffer ++ chunk),
+        (cause: Cause[Nothing]) => 
+          if (buffer.nonEmpty) 
+            ZChannel.write(buffer) *> ZChannel.refailCause(cause)
+          else 
+            ZChannel.refailCause(cause),
+        (_: Any) => 
+          if (buffer.nonEmpty) ZChannel.write(buffer)
+          else ZChannel.unit
+      )
+    }
+  loop(Chunk.empty)
+}
+```
+
+## Converting Between Abstractions
+
+### ZStream from Channel
+
+```scala
+val channel: ZChannel[Any, Any, Any, Any, String, Int, Unit] = ???
+
+val stream: ZStream[Any, String, Int] = 
+  new ZStream(channel)
+```
+
+### ZSink from Channel
+
+```scala
+val channel: ZChannel[Any, Nothing, Chunk[Int], Any, Nothing, Nothing, Int] = ???
+
+val sink: ZSink[Any, Nothing, Int, Nothing, Int] = 
+  ZSink.fromChannel(channel)
+```
+
+### ZPipeline from Channel
+
+```scala
+val channel: ZChannel[Any, Nothing, Chunk[Int], Any, Nothing, Chunk[String], Any] = ???
+
+val pipeline: ZPipeline[Any, Nothing, Int, String] = 
+  ZPipeline.fromChannel(channel)
+```
+
+## Running Channels
+
+```scala
+val channel: ZChannel[Any, Any, Any, Any, String, Int, String] = ???
+
+// Run the channel (must not read input or write output)
+val result: ZIO[Any, String, String] = 
+  channel.run
+
+// Run and collect output
+val collected: ZIO[Any, String, (Chunk[Int], String)] = 
+  channel.runCollect
+
+// Run and drain output
+val drained: ZIO[Any, String, String] = 
+  channel.runDrain
+```
+
+## Performance Considerations
+
+<Tip>
+  Channels are more efficient when working with chunks rather than individual elements:
+  
+  ```scala
+  // More efficient
+  ZChannel.readWithCause(
+    (chunk: Chunk[A]) => processChunk(chunk),
+    ...
+  )
+  
+  // Less efficient
+  ZChannel.read[E, A].flatMap(a => processElement(a))
+  ```
+</Tip>
+
+<Warning>
+  Recursive channels must use lazy evaluation to avoid stack overflow:
+  
+  ```scala
+  // Good: lazy val
+  lazy val loop: ZChannel[...] = 
+    ZChannel.readWith(...)
+  
+  // Bad: eager val
+  val loop: ZChannel[...] = 
+    ZChannel.readWith(...)  // Stack overflow!
+  ```
+</Warning>
+
+## See Also
+
+<CardGroup cols={2}>
+  <Card title="ZStream" href="/streaming/zstream" icon="water">
+    High-level stream abstraction
+  </Card>
+  <Card title="ZSink" href="/streaming/zsink" icon="sink">
+    High-level sink abstraction
+  </Card>
+  <Card title="ZPipeline" href="/streaming/zpipeline" icon="pipe">
+    High-level pipeline abstraction
+  </Card>
+</CardGroup>

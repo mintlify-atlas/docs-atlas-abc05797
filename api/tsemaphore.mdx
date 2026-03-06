@@ -1,0 +1,556 @@
+---
+title: 'TSemaphore'
+description: 'Transactional semaphore for atomic permit-based synchronization'
+---
+
+# TSemaphore
+
+`TSemaphore` is a semaphore that can be composed transactionally. It controls access to resources by managing permits that can be acquired and released atomically.
+
+## Overview
+
+TSemaphore provides a transactional semaphore for coordinating access to shared resources. Unlike traditional semaphores that use locks, TSemaphore uses Software Transactional Memory (STM), allowing it to participate in larger atomic transactions and compose with other STM data structures.
+
+Key features:
+- **Transactional**: All operations are STM transactions that can be composed
+- **No deadlocks**: STM's optimistic concurrency eliminates deadlock scenarios
+- **Automatic retry**: Blocks semantically without OS thread blocking
+- **Composable**: Can be combined with TRef, TMap, TQueue, etc.
+
+## Creating TSemaphore
+
+### make
+
+```scala
+def make(permits: => Long): USTM[TSemaphore]
+```
+
+Creates a new `TSemaphore` with the specified number of permits.
+
+```scala
+val createSemaphore: USTM[TSemaphore] = TSemaphore.make(5)
+```
+
+### makeCommit
+
+```scala
+def makeCommit(permits: => Long)(implicit trace: Trace): UIO[TSemaphore]
+```
+
+Creates a `TSemaphore` and immediately commits the transaction.
+
+```scala
+val program = for {
+  semaphore <- TSemaphore.makeCommit(3)
+  _         <- semaphore.acquire.commit
+} yield ()
+```
+
+## Acquiring Permits
+
+### acquire
+
+```scala
+val acquire: USTM[Unit]
+```
+
+Acquires a single permit. Retries if no permits are available.
+
+```scala
+val tx: USTM[Unit] = for {
+  sem <- TSemaphore.make(5)
+  _   <- sem.acquire
+} yield ()
+```
+
+### acquireN
+
+```scala
+def acquireN(n: Long): USTM[Unit]
+```
+
+Acquires the specified number of permits. Retries if insufficient permits available.
+
+```scala
+val tx: USTM[Unit] = for {
+  sem <- TSemaphore.make(10)
+  _   <- sem.acquireN(3)
+} yield ()
+```
+
+### acquireBetween
+
+```scala
+def acquireBetween(min: Long, max: Long): USTM[Long]
+```
+
+Acquires between `min` and `max` permits. Returns the actual number acquired.
+
+```scala
+val tx: USTM[Long] = for {
+  sem      <- TSemaphore.make(10)
+  acquired <- sem.acquireBetween(3, 7) // Acquires up to 7, minimum 3
+} yield acquired
+```
+
+### acquireUpTo
+
+```scala
+def acquireUpTo(max: Long): USTM[Long]
+```
+
+Acquires up to `max` permits without blocking. Returns the number acquired.
+
+```scala
+val tx: USTM[Long] = for {
+  sem      <- TSemaphore.make(5)
+  acquired <- sem.acquireUpTo(10) // Acquires all 5 available
+} yield acquired // Returns 5
+```
+
+### tryAcquire / tryAcquireN
+
+```scala
+val tryAcquire: USTM[Boolean]
+def tryAcquireN(n: Long): USTM[Boolean]
+```
+
+Attempts to acquire permits without retrying. Returns `true` if successful.
+
+```scala
+val tx: USTM[Boolean] = for {
+  sem     <- TSemaphore.make(5)
+  success <- sem.tryAcquireN(3)
+} yield success // true if 3 permits available
+```
+
+## Releasing Permits
+
+### release
+
+```scala
+val release: USTM[Unit]
+```
+
+Releases a single permit.
+
+```scala
+val tx: USTM[Unit] = for {
+  sem <- TSemaphore.make(5)
+  _   <- sem.acquire
+  _   <- sem.release
+} yield ()
+```
+
+### releaseN
+
+```scala
+def releaseN(n: Long): USTM[Unit]
+```
+
+Releases the specified number of permits.
+
+```scala
+val tx: USTM[Unit] = for {
+  sem <- TSemaphore.make(10)
+  _   <- sem.acquireN(5)
+  _   <- sem.releaseN(5)
+} yield ()
+```
+
+## Querying Status
+
+### available
+
+```scala
+val available: USTM[Long]
+```
+
+Returns the number of available permits.
+
+```scala
+val tx: USTM[Long] = for {
+  sem   <- TSemaphore.make(10)
+  _     <- sem.acquireN(3)
+  avail <- sem.available
+} yield avail // 7
+```
+
+## Resource Management
+
+### withPermit
+
+```scala
+def withPermit[R, E, A](zio: ZIO[R, E, A])(implicit trace: Trace): ZIO[R, E, A]
+```
+
+Executes an effect with a single permit, automatically releasing it afterward.
+
+```scala
+val program = for {
+  sem <- TSemaphore.makeCommit(3)
+  _   <- sem.withPermit {
+           Console.printLine("Accessing protected resource")
+         }
+} yield ()
+```
+
+### withPermits
+
+```scala
+def withPermits[R, E, A](n: Long)(zio: ZIO[R, E, A])(implicit trace: Trace): ZIO[R, E, A]
+```
+
+Executes an effect with `n` permits, automatically releasing them afterward.
+
+```scala
+val program = for {
+  sem <- TSemaphore.makeCommit(10)
+  _   <- sem.withPermits(3) {
+           Console.printLine("Using 3 permits")
+         }
+} yield ()
+```
+
+### withPermitsBetween
+
+```scala
+def withPermitsBetween[R, E, A](min: Long, max: Long)(zio: Long => ZIO[R, E, A])(implicit trace: Trace): ZIO[R, E, A]
+```
+
+Executes an effect with between `min` and `max` permits.
+
+```scala
+val program = for {
+  sem <- TSemaphore.makeCommit(10)
+  _   <- sem.withPermitsBetween(2, 5) { acquired =>
+           Console.printLine(s"Using $acquired permits")
+         }
+} yield ()
+```
+
+### withPermitsUpTo
+
+```scala
+def withPermitsUpTo[R, E, A](max: Long)(zio: Long => ZIO[R, E, A])(implicit trace: Trace): ZIO[R, E, A]
+```
+
+Executes an effect with up to `max` permits.
+
+```scala
+val program = for {
+  sem <- TSemaphore.makeCommit(3)
+  _   <- sem.withPermitsUpTo(5) { acquired =>
+           Console.printLine(s"Got $acquired permits") // Prints "Got 3 permits"
+         }
+} yield ()
+```
+
+### tryWithPermit / tryWithPermits
+
+```scala
+def tryWithPermit[R, E, A](zio: ZIO[R, E, A])(implicit trace: Trace): ZIO[R, E, Option[A]]
+def tryWithPermits[R, E, A](n: Long)(zio: ZIO[R, E, A])(implicit trace: Trace): ZIO[R, E, Option[A]]
+```
+
+Tries to execute an effect with permits, returning `None` if unavailable.
+
+```scala
+val program = for {
+  sem    <- TSemaphore.makeCommit(1)
+  _      <- sem.acquire.commit // Acquire the only permit
+  result <- sem.tryWithPermit {
+              Console.printLine("This won't run")
+            }
+} yield result // None
+```
+
+## Scoped Permit Management
+
+### withPermitScoped
+
+```scala
+def withPermitScoped(implicit trace: Trace): ZIO[Scope, Nothing, Unit]
+```
+
+Acquires a permit within a scope, releasing it when the scope closes.
+
+```scala
+val program = ZIO.scoped {
+  for {
+    sem <- TSemaphore.makeCommit(3)
+    _   <- sem.withPermitScoped
+    _   <- Console.printLine("Permit held")
+    // Permit automatically released when scope ends
+  } yield ()
+}
+```
+
+### withPermitsScoped
+
+```scala
+def withPermitsScoped(n: Long)(implicit trace: Trace): ZIO[Scope, Nothing, Unit]
+```
+
+Acquires `n` permits within a scope.
+
+```scala
+val program = ZIO.scoped {
+  for {
+    sem <- TSemaphore.makeCommit(10)
+    _   <- sem.withPermitsScoped(3)
+    _   <- Console.printLine("3 permits held")
+  } yield ()
+}
+```
+
+### withPermitsBetweenScoped / withPermitsUpToScoped
+
+```scala
+def withPermitsBetweenScoped(min: Long, max: Long)(implicit trace: Trace): ZIO[Scope, Nothing, Long]
+def withPermitsUpToScoped(max: Long)(implicit trace: Trace): ZIO[Scope, Nothing, Long]
+```
+
+Acquires permits within a scope, returning the number acquired.
+
+```scala
+val program = ZIO.scoped {
+  for {
+    sem      <- TSemaphore.makeCommit(5)
+    acquired <- sem.withPermitsUpToScoped(10)
+    _        <- Console.printLine(s"Acquired $acquired permits")
+  } yield ()
+}
+```
+
+## Example: Rate Limiter
+
+```scala
+import zio._
+import zio.stm._
+
+class RateLimiter(semaphore: TSemaphore, refillRate: Duration) {
+  
+  def execute[R, E, A](effect: ZIO[R, E, A]): ZIO[R, E, A] =
+    semaphore.withPermit(effect)
+  
+  // Background fiber to refill permits
+  def startRefill(maxPermits: Long): UIO[Fiber[Nothing, Nothing]] =
+    (
+      semaphore.available.commit.flatMap { current =>
+        val toAdd = (maxPermits - current).max(0L)
+        semaphore.releaseN(toAdd).commit.when(toAdd > 0)
+      } *> ZIO.sleep(refillRate)
+    ).forever.fork
+}
+
+object RateLimiter {
+  def make(maxPermits: Long, refillRate: Duration): UIO[RateLimiter] = for {
+    sem     <- TSemaphore.makeCommit(maxPermits)
+    limiter = new RateLimiter(sem, refillRate)
+    _       <- limiter.startRefill(maxPermits)
+  } yield limiter
+}
+
+// Usage: Limit to 10 requests per second
+val program = for {
+  limiter <- RateLimiter.make(10, 1.second)
+  _       <- ZIO.foreach(1 to 100) { i =>
+               limiter.execute {
+                 Console.printLine(s"Request $i")
+               }
+             }
+} yield ()
+```
+
+## Example: Connection Pool
+
+```scala
+import zio._
+import zio.stm._
+
+class ConnectionPool[Conn](
+  semaphore: TSemaphore,
+  create: UIO[Conn],
+  destroy: Conn => UIO[Unit]
+) {
+  
+  def withConnection[R, E, A](use: Conn => ZIO[R, E, A]): ZIO[R, E, A] =
+    semaphore.withPermit {
+      ZIO.acquireReleaseWith(create)(destroy)(use)
+    }
+}
+
+object ConnectionPool {
+  def make[Conn](
+    maxConnections: Int,
+    create: UIO[Conn],
+    destroy: Conn => UIO[Unit]
+  ): UIO[ConnectionPool[Conn]] = for {
+    sem <- TSemaphore.makeCommit(maxConnections.toLong)
+  } yield new ConnectionPool(sem, create, destroy)
+}
+
+// Usage
+case class DbConnection(id: Int)
+
+val program = for {
+  pool <- ConnectionPool.make(
+            maxConnections = 5,
+            create = Random.nextInt.map(DbConnection(_)),
+            destroy = conn => Console.printLine(s"Closing connection ${conn.id}")
+          )
+  
+  // Multiple fibers sharing the connection pool
+  fibers <- ZIO.foreach(1 to 20) { i =>
+              pool.withConnection { conn =>
+                Console.printLine(s"Task $i using connection ${conn.id}") *>
+                ZIO.sleep(100.millis)
+              }.fork
+            }
+  
+  _ <- ZIO.collectAll(fibers.map(_.join))
+} yield ()
+```
+
+## Example: Bounded Parallelism
+
+```scala
+import zio._
+import zio.stm._
+
+def parallelWithLimit[R, E, A, B](
+  items: Iterable[A],
+  parallelism: Int
+)(f: A => ZIO[R, E, B]): ZIO[R, E, List[B]] = for {
+  sem     <- TSemaphore.makeCommit(parallelism.toLong)
+  results <- ZIO.foreach(items) { item =>
+               sem.withPermit(f(item))
+             }
+} yield results
+
+// Usage: Process items with max 5 concurrent operations
+val program = for {
+  results <- parallelWithLimit(1 to 100, parallelism = 5) { i =>
+               Console.printLine(s"Processing $i") *>
+               ZIO.sleep(100.millis) *>
+               ZIO.succeed(i * 2)
+             }
+  _ <- Console.printLine(s"Processed ${results.size} items")
+} yield ()
+```
+
+## Example: Multi-Resource Access
+
+```scala
+import zio._
+import zio.stm._
+
+// Coordinate access to multiple resources atomically
+def transferWithPermits(
+  from: TRef[Int],
+  to: TRef[Int],
+  amount: Int,
+  fromSem: TSemaphore,
+  toSem: TSemaphore
+): UIO[Unit] = (
+  for {
+    _           <- fromSem.acquire
+    _           <- toSem.acquire
+    fromBalance <- from.get
+    _           <- STM.check(fromBalance >= amount)
+    _           <- from.update(_ - amount)
+    _           <- to.update(_ + amount)
+    _           <- fromSem.release
+    _           <- toSem.release
+  } yield ()
+).commit
+
+// Usage
+val program = for {
+  account1 <- TRef.makeCommit(1000)
+  account2 <- TRef.makeCommit(500)
+  sem1     <- TSemaphore.makeCommit(1)
+  sem2     <- TSemaphore.makeCommit(1)
+  
+  _        <- transferWithPermits(account1, account2, 200, sem1, sem2)
+  
+  balance1 <- account1.get.commit
+  balance2 <- account2.get.commit
+  _        <- Console.printLine(s"Account 1: $balance1, Account 2: $balance2")
+} yield ()
+```
+
+## Example: Adaptive Concurrency
+
+```scala
+import zio._
+import zio.stm._
+
+class AdaptiveSemaphore(
+  semaphore: TSemaphore,
+  maxPermits: TRef[Long],
+  successRate: TRef[Double]
+) {
+  
+  def withAdaptivePermit[R, E, A](effect: ZIO[R, E, A]): ZIO[R, E, A] =
+    semaphore.withPermit {
+      effect.tapBoth(
+        _ => updateSuccessRate(false),
+        _ => updateSuccessRate(true)
+      )
+    }
+  
+  private def updateSuccessRate(success: Boolean): UIO[Unit] = (
+    for {
+      current <- successRate.get
+      updated  = if (success) current * 0.9 + 0.1 else current * 0.9
+      _       <- successRate.set(updated)
+      max     <- maxPermits.get
+      
+      // Adjust permits based on success rate
+      _       <- if (updated > 0.95 && max < 100) {
+                   maxPermits.update(_ + 1) *>
+                   semaphore.release
+                 } else if (updated < 0.8 && max > 1) {
+                   maxPermits.update(_ - 1) *>
+                   semaphore.acquire
+                 } else STM.unit
+    } yield ()
+  ).commit
+}
+
+object AdaptiveSemaphore {
+  def make(initialPermits: Long): UIO[AdaptiveSemaphore] = for {
+    sem  <- TSemaphore.makeCommit(initialPermits)
+    max  <- TRef.makeCommit(initialPermits)
+    rate <- TRef.makeCommit(1.0)
+  } yield new AdaptiveSemaphore(sem, max, rate)
+}
+```
+
+## Best Practices
+
+1. **Always release permits**: Use `withPermit` or scoped variants to ensure permits are released
+2. **Match acquire and release**: Every `acquireN` should have a corresponding `releaseN`
+3. **Avoid permit leaks**: Prefer `withPermit` over manual acquire/release
+4. **Start with appropriate capacity**: Size permits based on resource constraints
+5. **Compose with other STM**: TSemaphore works well with TRef, TQueue for complex coordination
+6. **Use tryAcquire for non-blocking**: When you can't afford to wait
+7. **Consider fairness**: First-come-first-served isn't guaranteed - design accordingly
+
+## Performance Considerations
+
+- TSemaphore uses STM's optimistic concurrency control
+- Very high contention may cause transaction retries
+- More efficient than lock-based semaphores for moderate contention
+- `withPermit` has minimal overhead compared to manual acquire/release
+- Scoped variants integrate well with ZIO's resource safety
+
+## See Also
+
+- [ZSTM](/api/zstm) - Core STM effect type
+- [TRef](/api/tref) - Transactional references
+- [TQueue](/api/tqueue) - Transactional queues
+- [TMap](/api/tmap) - Transactional maps
+- [Semaphore](/api/semaphore) - Non-transactional semaphore

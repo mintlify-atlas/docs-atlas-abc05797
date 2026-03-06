@@ -1,0 +1,299 @@
+---
+title: 'CountdownLatch'
+description: 'Synchronization primitive for coordinating fiber execution'
+icon: 'hourglass-end'
+---
+
+## Overview
+
+`CountdownLatch` is a synchronization aid that allows one or more fibers to wait until a set of operations being performed in other fibers completes. It is initialized with a count and provides `await` and `countDown` operations.
+
+## Key Characteristics
+
+- **One-shot**: The count cannot be reset after reaching zero
+- **Multiple waiters**: Any number of fibers can wait on the latch
+- **Non-blocking countdown**: Fibers calling `countDown` don't wait for the count to reach zero
+
+<Note>
+  If you need a reusable synchronization primitive, consider using [CyclicBarrier](/api/cyclic-barrier) instead.
+</Note>
+
+## Creating a CountdownLatch
+
+### make
+
+Creates a new `CountdownLatch` with the specified initial count.
+
+```scala
+def make(n: Int): UIO[CountdownLatch]
+```
+
+**Parameters:**
+- `n` - The initial count (must be positive)
+
+**Example:**
+
+```scala
+import zio._
+import zio.concurrent._
+
+val program = for {
+  latch <- CountdownLatch.make(3)
+  // Use latch for coordination
+} yield ()
+```
+
+<Warning>
+  The count `n` must be positive (> 0). Passing a non-positive value will result in a fiber failure.
+</Warning>
+
+## Operations
+
+### await
+
+Causes the current fiber to wait until the latch has counted down to zero.
+
+```scala
+val await: UIO[Unit]
+```
+
+**Behavior:**
+- If the count is already zero, returns immediately
+- Otherwise, blocks the fiber until another fiber calls `countDown` enough times to reach zero
+- All waiting fibers are released simultaneously when the count reaches zero
+
+**Example:**
+
+```scala
+for {
+  latch <- CountdownLatch.make(1)
+  fiber <- latch.await.fork
+  _     <- latch.countDown
+  _     <- fiber.join
+} yield ()
+```
+
+### countDown
+
+Decrements the count of the latch, releasing all waiting fibers if the count reaches zero.
+
+```scala
+val countDown: UIO[Unit]
+```
+
+**Behavior:**
+- Decrements the count by one
+- If the count reaches zero, all waiting fibers are released
+- If the count is already zero, has no effect
+- Returns immediately without blocking
+
+**Example:**
+
+```scala
+for {
+  latch <- CountdownLatch.make(3)
+  _     <- latch.countDown
+  _     <- latch.countDown
+  _     <- latch.countDown // Releases all waiters
+} yield ()
+```
+
+### count
+
+Returns the current count.
+
+```scala
+val count: UIO[Int]
+```
+
+**Example:**
+
+```scala
+for {
+  latch <- CountdownLatch.make(5)
+  c1    <- latch.count
+  _     <- latch.countDown
+  c2    <- latch.count
+} yield (c1, c2) // (5, 4)
+```
+
+## Common Patterns
+
+### Starting Gate
+
+Use a latch with count 1 to create a starting gate that releases multiple fibers simultaneously.
+
+```scala
+for {
+  startGate <- CountdownLatch.make(1)
+  
+  // Start multiple workers that wait for the signal
+  workers <- ZIO.foreach(1 to 10) { i =>
+    (startGate.await *> doWork(i)).fork
+  }
+  
+  // Do some preparation
+  _ <- prepareEnvironment
+  
+  // Release all workers at once
+  _ <- startGate.countDown
+  
+  // Wait for all workers to complete
+  _ <- ZIO.foreach(workers)(_.join)
+} yield ()
+```
+
+### Completion Counter
+
+Wait for N operations to complete before proceeding.
+
+```scala
+for {
+  latch <- CountdownLatch.make(5)
+  
+  // Start 5 async operations
+  _ <- ZIO.foreachPar(1 to 5) { i =>
+    processItem(i) *> latch.countDown
+  }.fork
+  
+  // Wait for all operations to complete
+  _ <- latch.await
+  _ <- Console.printLine("All operations completed")
+} yield ()
+```
+
+### Phased Execution
+
+Coordinate multiple phases of execution across fibers.
+
+```scala
+for {
+  phase1Complete <- CountdownLatch.make(3)
+  phase2Complete <- CountdownLatch.make(3)
+  
+  _ <- ZIO.foreachPar(1 to 3) { workerId =>
+    for {
+      _ <- phase1Work(workerId)
+      _ <- phase1Complete.countDown
+      _ <- phase1Complete.await
+      _ <- phase2Work(workerId)
+      _ <- phase2Complete.countDown
+    } yield ()
+  }
+  
+  _ <- phase2Complete.await
+  _ <- Console.printLine("All phases completed")
+} yield ()
+```
+
+### Service Initialization
+
+Wait for dependent services to be ready before starting.
+
+```scala
+class Application(services: List[Service]) {
+  def start: Task[Unit] = for {
+    readyLatch <- CountdownLatch.make(services.length)
+    
+    // Start all services
+    _ <- ZIO.foreachPar(services) { service =>
+      service.initialize *> readyLatch.countDown
+    }.fork
+    
+    // Wait for all services to be ready
+    _ <- readyLatch.await
+    _ <- Console.printLine("All services ready")
+    
+    // Start application logic
+    _ <- runApplication
+  } yield ()
+}
+```
+
+## Use Cases
+
+### Parallel Task Completion
+
+```scala
+def processInParallel[A, B](
+  items: List[A]
+)(process: A => Task[B]): Task[List[B]] =
+  for {
+    latch   <- CountdownLatch.make(items.length)
+    results <- Ref.make(List.empty[B])
+    
+    _ <- ZIO.foreachPar(items) { item =>
+      for {
+        result <- process(item)
+        _      <- results.update(result :: _)
+        _      <- latch.countDown
+      } yield ()
+    }.fork
+    
+    _ <- latch.await
+    finalResults <- results.get
+  } yield finalResults
+```
+
+### Testing Concurrent Operations
+
+```scala
+test("concurrent access to shared resource") {
+  for {
+    latch    <- CountdownLatch.make(10)
+    resource <- Ref.make(0)
+    
+    // 10 fibers increment the counter
+    _ <- ZIO.foreachPar(1 to 10) { _ =>
+      resource.update(_ + 1) *> latch.countDown
+    }.fork
+    
+    _ <- latch.await
+    finalValue <- resource.get
+  } yield assertTrue(finalValue == 10)
+}
+```
+
+## Comparison with Other Primitives
+
+| Primitive | Reusable | Multiple Waiters | Count Direction | Use Case |
+|-----------|----------|-----------------|-----------------|----------|
+| **CountdownLatch** | No | Yes | Down to zero | One-time coordination |
+| [CyclicBarrier](/api/cyclic-barrier) | Yes | Yes | Up to parties | Repeated synchronization |
+| [Promise](/api/promise) | No | Yes | N/A | Single value completion |
+| [Semaphore](/api/semaphore) | Yes | Yes | Both | Resource management |
+
+## Implementation Details
+
+`CountdownLatch` is implemented using:
+- `Ref[Int]` for the counter
+- `Promise[Nothing, Unit]` for coordinating waiters
+
+This implementation is fiber-safe and interruption-safe.
+
+## Best Practices
+
+<AccordionGroup>
+  <Accordion title="Always use positive counts">
+    The latch must be initialized with a count greater than zero. Use `CountdownLatch.make(1)` at minimum.
+  </Accordion>
+  
+  <Accordion title="One-shot pattern">
+    Remember that `CountdownLatch` cannot be reset. If you need repeated synchronization, use `CyclicBarrier` instead.
+  </Accordion>
+  
+  <Accordion title="Count management">
+    Ensure you call `countDown` the exact number of times specified in the initial count, otherwise waiting fibers will wait indefinitely.
+  </Accordion>
+  
+  <Accordion title="Timeout handling">
+    Consider using `latch.await.timeout(duration)` to avoid indefinite waiting if some fibers fail to count down.
+  </Accordion>
+</AccordionGroup>
+
+## See Also
+
+- [CyclicBarrier](/api/cyclic-barrier) - Reusable synchronization barrier
+- [Promise](/api/promise) - One-time value completion
+- [Semaphore](/api/semaphore) - Resource access control
+- [Ref](/api/ref) - Atomic reference

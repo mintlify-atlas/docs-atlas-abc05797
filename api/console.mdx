@@ -1,0 +1,116 @@
+---
+title: "Console"
+description: "Console I/O operations"
+---
+
+# Console Service
+
+The `Console` service provides operations for console input and output.
+
+## Output Methods
+
+### printLine
+
+```scala
+def printLine(line: Any): IO[IOException, Unit]
+```
+
+Prints a line to standard output.
+
+```scala
+Console.printLine("Hello, World!")
+```
+
+### print
+
+```scala
+def print(text: Any): IO[IOException, Unit]
+```
+
+Prints text without a newline.
+
+```scala
+for {
+  _ <- Console.print("Enter name: ")
+  name <- Console.readLine
+  _ <- Console.printLine(s"Hello, $name!")
+} yield ()
+```
+
+### printLineError
+
+```scala
+def printLineError(line: Any): IO[IOException, Unit]
+```
+
+Prints a line to standard error.
+
+```scala
+Console.printLineError("Error: File not found")
+```
+
+## Input Methods
+
+### readLine
+
+```scala
+val readLine: IO[IOException, String]
+```
+
+Reads a line from standard input.
+
+```scala
+for {
+  _ <- Console.printLine("What's your name?")
+  name <- Console.readLine
+  _ <- Console.printLine(s"Hello, $name!")
+} yield ()
+```
+
+## Usage Examples
+
+### Interactive Program
+
+```scala
+val program: ZIO[Any, IOException, Unit] =
+  for {
+    _ <- Console.printLine("Guess the number (1-10):")
+    guess <- Console.readLine
+    number = scala.util.Random.nextInt(10) + 1
+    _ <- if (guess.toInt == number)
+      Console.printLine("Correct!")
+    else
+      Console.printLine(s"Wrong! The number was $number")
+  } yield ()
+```
+
+### Menu System
+
+```scala
+def showMenu: ZIO[Any, IOException, Unit] =
+  for {
+    _ <- Console.printLine("1. Start")
+    _ <- Console.printLine("2. Settings")
+    _ <- Console.printLine("3. Exit")
+    _ <- Console.print("Choose option: ")
+    choice <- Console.readLine
+    _ <- handleChoice(choice)
+  } yield ()
+```
+
+## Testing
+
+Use `TestConsole` to capture output and provide input in tests.
+
+```scala
+for {
+  _ <- TestConsole.feedLines("Alice")
+  name <- Console.readLine
+  output <- TestConsole.output
+} yield assertTrue(name == "Alice")
+```
+
+## See Also
+
+- [TestConsole](/testing/test-services) - Console testing
+- [System](/api/system) - System properties and environment

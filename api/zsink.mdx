@@ -1,0 +1,421 @@
+---
+title: ZSink
+---
+
+A `ZSink[R, E, In, L, Z]` is a consumer of values from a stream. Sinks consume values of type `In`, may fail with an error of type `E`, require an environment of type `R`, may produce leftover values of type `L`, and ultimately produce a result of type `Z`.
+
+Sinks are used to aggregate, fold, or otherwise consume stream elements to produce a final result.
+
+## Type Signature
+
+```scala
+final class ZSink[-R, +E, -In, +L, +Z] private (
+  val channel: ZChannel[R, ZNothing, Chunk[In], Any, E, Chunk[L], Z]
+)
+```
+
+The type parameters are:
+- `R` - Environment required by the sink
+- `E` - Error type the sink may fail with
+- `In` - Type of values the sink consumes
+- `L` - Type of leftover values not consumed
+- `Z` - Type of the final result
+
+## Core Constructors
+
+### Collection
+
+#### `collectAll`
+```scala
+def collectAll[In](implicit trace: Trace): ZSink[Any, Nothing, In, Nothing, Chunk[In]]
+```
+Collects all inputs into a chunk.
+
+#### `collectAllN`
+```scala
+def collectAllN[In](n: => Int)(implicit trace: Trace): ZSink[Any, Nothing, In, In, Chunk[In]]
+```
+Collects the first `n` elements into a chunk.
+
+#### `collectAllToSet`
+```scala
+def collectAllToSet[In](implicit trace: Trace): ZSink[Any, Nothing, In, Nothing, Set[In]]
+```
+Collects all inputs into a set.
+
+#### `collectAllToSetN`
+```scala
+def collectAllToSetN[In](n: => Long)(implicit trace: Trace): ZSink[Any, Nothing, In, In, Set[In]]
+```
+Collects the first `n` distinct elements into a set.
+
+#### `collectAllToMap`
+```scala
+def collectAllToMap[In, K](
+  key: In => K
+)(f: (In, In) => In)(implicit trace: Trace): ZSink[Any, Nothing, In, Nothing, Map[K, In]]
+```
+Collects all inputs into a map using a key function and a merge function for duplicate keys.
+
+#### `collectAllToMapN`
+```scala
+def collectAllToMapN[Err, In, K](
+  n: => Long
+)(key: In => K)(f: (In, In) => In)(implicit trace: Trace): ZSink[Any, Err, In, In, Map[K, In]]
+```
+Collects the first `n` keys into a map.
+
+### Conditional Collection
+
+#### `collectAllUntil`
+```scala
+def collectAllUntil[In](
+  p: In => Boolean
+)(implicit trace: Trace): ZSink[Any, Nothing, In, In, Chunk[In]]
+```
+Accumulates incoming elements into a chunk until the predicate `p` is satisfied.
+
+#### `collectAllUntilZIO`
+```scala
+def collectAllUntilZIO[Env, Err, In](
+  p: In => ZIO[Env, Err, Boolean]
+)(implicit trace: Trace): ZSink[Env, Err, In, In, Chunk[In]]
+```
+Accumulates incoming elements into a chunk until the effectful predicate `p` is satisfied.
+
+#### `collectAllWhile`
+```scala
+def collectAllWhile[In](
+  p: In => Boolean
+)(implicit trace: Trace): ZSink[Any, Nothing, In, In, Chunk[In]]
+```
+Accumulates incoming elements into a chunk as long as they verify the predicate `p`.
+
+#### `collectAllWhileZIO`
+```scala
+def collectAllWhileZIO[Env, Err, In](
+  p: In => ZIO[Env, Err, Boolean]
+)(implicit trace: Trace): ZSink[Env, Err, In, In, Chunk[In]]
+```
+Accumulates incoming elements into a chunk as long as they verify the effectful predicate `p`.
+
+### Folding
+
+#### `foldLeft`
+```scala
+def foldLeft[In, S](z: => S)(f: (S, In) => S)(implicit trace: Trace): ZSink[Any, Nothing, In, Nothing, S]
+```
+Folds over the inputs using the specified function, starting with an initial state.
+
+#### `foldLeftZIO`
+```scala
+def foldLeftZIO[Env, Err, In, S](
+  z: => S
+)(f: (S, In) => ZIO[Env, Err, S])(implicit trace: Trace): ZSink[Env, Err, In, Nothing, S]
+```
+Effectfully folds over the inputs.
+
+#### `fold`
+```scala
+def fold[In, S](
+  z: => S
+)(cont: S => Boolean)(f: (S, In) => S)(implicit trace: Trace): ZSink[Any, Nothing, In, In, S]
+```
+Folds over inputs until the continuation predicate returns false.
+
+#### `foldZIO`
+```scala
+def foldZIO[Env, Err, In, S](
+  z: => S
+)(cont: S => Boolean)(f: (S, In) => ZIO[Env, Err, S])(implicit trace: Trace): ZSink[Env, Err, In, In, S]
+```
+Effectfully folds over inputs with a continuation predicate.
+
+#### `foldWeighted`
+```scala
+def foldWeighted[In, S](
+  z: => S
+)(costFn: (S, In) => Long, max: => Long)(f: (S, In) => S)(implicit 
+  trace: Trace
+): ZSink[Any, Nothing, In, In, S]
+```
+Folds over inputs with a weighted cost function, stopping when the cost exceeds the maximum.
+
+#### `foldWeightedZIO`
+```scala
+def foldWeightedZIO[Env, Err, In, S](
+  z: => S
+)(costFn: (S, In) => ZIO[Env, Err, Long], max: => Long)(
+  f: (S, In) => ZIO[Env, Err, S]
+)(implicit trace: Trace): ZSink[Env, Err, In, In, S]
+```
+Effectfully folds over inputs with a weighted cost function.
+
+#### `foldUntil`
+```scala
+def foldUntil[In, S](
+  z: => S,
+  max: => Long
+)(f: (S, In) => S)(implicit trace: Trace): ZSink[Any, Nothing, In, In, S]
+```
+Folds over inputs until a maximum number of elements is reached.
+
+#### `foldUntilZIO`
+```scala
+def foldUntilZIO[Env, Err, In, S](
+  z: => S,
+  max: => Long
+)(f: (S, In) => ZIO[Env, Err, S])(implicit trace: Trace): ZSink[Env, Err, In, In, S]
+```
+Effectfully folds over inputs until a maximum number of elements is reached.
+
+### Specialized Sinks
+
+#### `head`
+```scala
+def head[In](implicit trace: Trace): ZSink[Any, Nothing, In, In, Option[In]]
+```
+Creates a sink that returns the first element.
+
+#### `last`
+```scala
+def last[In](implicit trace: Trace): ZSink[Any, Nothing, In, Nothing, Option[In]]
+```
+Creates a sink that returns the last element.
+
+#### `count`
+```scala
+def count(implicit trace: Trace): ZSink[Any, Nothing, Any, Nothing, Long]
+```
+Creates a sink that counts the number of elements.
+
+#### `sum`
+```scala
+def sum[In](implicit ev: Numeric[In], trace: Trace): ZSink[Any, Nothing, In, Nothing, In]
+```
+Creates a sink that sums numeric values.
+
+#### `drain`
+```scala
+def drain(implicit trace: Trace): ZSink[Any, Nothing, Any, Nothing, Unit]
+```
+Creates a sink that ignores all inputs.
+
+### Conditional Sinks
+
+#### `forEach`
+```scala
+def forEach[R, Err, In](
+  f: In => ZIO[R, Err, Any]
+)(implicit trace: Trace): ZSink[R, Err, In, Nothing, Unit]
+```
+Creates a sink that executes an effect for each input.
+
+#### `forEachWhile`
+```scala
+def forEachWhile[R, Err, In](
+  f: In => ZIO[R, Err, Boolean]
+)(implicit trace: Trace): ZSink[R, Err, In, In, Unit]
+```
+Creates a sink that executes an effect for each input while the effect returns true.
+
+### Dropping & Taking
+
+#### `dropWhile`
+```scala
+def dropWhile[In](
+  p: In => Boolean
+)(implicit trace: Trace): ZSink[Any, Nothing, In, In, Any]
+```
+Drops incoming elements as long as the predicate is satisfied.
+
+#### `dropWhileZIO`
+```scala
+def dropWhileZIO[R, Err, In](
+  p: In => ZIO[R, Err, Boolean]
+)(implicit trace: Trace): ZSink[R, Err, In, In, Any]
+```
+Effectfully drops incoming elements as long as the predicate is satisfied.
+
+#### `take`
+```scala
+def take[In](n: => Long)(implicit trace: Trace): ZSink[Any, Nothing, In, In, Chunk[In]]
+```
+Takes the first `n` elements.
+
+#### `takeWhile`
+```scala
+def takeWhile[In](
+  p: In => Boolean
+)(implicit trace: Trace): ZSink[Any, Nothing, In, In, Chunk[In]]
+```
+Takes elements while the predicate is satisfied.
+
+### Error Handling
+
+#### `fail`
+```scala
+def fail[E](e: => E)(implicit trace: Trace): ZSink[Any, E, Any, Nothing, Nothing]
+```
+Creates a sink that always fails with the specified error.
+
+#### `failCause`
+```scala
+def failCause[E](cause: => Cause[E])(implicit trace: Trace): ZSink[Any, E, Any, Nothing, Nothing]
+```
+Creates a sink that always fails with the specified cause.
+
+#### `die`
+```scala
+def die(e: => Throwable)(implicit trace: Trace): ZSink[Any, Nothing, Any, Nothing, Nothing]
+```
+Creates a sink that halts with the specified throwable.
+
+#### `dieMessage`
+```scala
+def dieMessage(m: => String)(implicit trace: Trace): ZSink[Any, Nothing, Any, Nothing, Nothing]
+```
+Creates a sink that halts with the specified message.
+
+### Construction
+
+#### `succeed`
+```scala
+def succeed[Z](z: => Z)(implicit trace: Trace): ZSink[Any, Nothing, Any, Nothing, Z]
+```
+Creates a sink that succeeds with the specified value.
+
+#### `fromChannel`
+```scala
+def fromChannel[R, E, In, L, Z](
+  channel: ZChannel[R, ZNothing, Chunk[In], Any, E, Chunk[L], Z]
+): ZSink[R, E, In, L, Z]
+```
+Creates a sink from a channel.
+
+## Key Combinators
+
+### Transformation
+
+#### `map`
+```scala
+def map[Z2](f: Z => Z2)(implicit trace: Trace): ZSink[R, E, In, L, Z2]
+```
+Transforms the result of the sink.
+
+#### `mapZIO`
+```scala
+def mapZIO[R1 <: R, E1 >: E, Z2](
+  f: Z => ZIO[R1, E1, Z2]
+)(implicit trace: Trace): ZSink[R1, E1, In, L, Z2]
+```
+Effectfully transforms the result of the sink.
+
+#### `contramap`
+```scala
+def contramap[In1](f: In1 => In)(implicit trace: Trace): ZSink[R, E, In1, L, Z]
+```
+Transforms the sink's input elements.
+
+#### `contramapZIO`
+```scala
+def contramapZIO[R1 <: R, E1 >: E, In1](
+  f: In1 => ZIO[R1, E1, In]
+)(implicit trace: Trace): ZSink[R1, E1, In1, L, Z]
+```
+Effectfully transforms the sink's input elements.
+
+#### `dimap`
+```scala
+def dimap[In1, Z1](
+  f: In1 => In,
+  g: Z => Z1
+)(implicit trace: Trace): ZSink[R, E, In1, L, Z1]
+```
+Transforms both inputs and result of the sink.
+
+### Combination
+
+#### `zip`
+```scala
+def zip[R1 <: R, E1 >: E, In1 <: In, L1 >: L <: In1, Z1](
+  that: => ZSink[R1, E1, In1, L1, Z1]
+)(implicit zippable: Zippable[Z, Z1], trace: Trace): ZSink[R1, E1, In1, L1, zippable.Out]
+```
+Runs both sinks in sequence and combines their results.
+
+#### `zipPar`
+```scala
+def zipPar[R1 <: R, E1 >: E, In1 <: In, L1 >: L <: In1, Z1](
+  that: => ZSink[R1, E1, In1, L1, Z1]
+)(implicit zippable: Zippable[Z, Z1], trace: Trace): ZSink[R1, E1, In1, L1, zippable.Out]
+```
+Runs both sinks in parallel and combines their results.
+
+#### `race`
+```scala
+def race[R1 <: R, E1 >: E, In1 <: In, L1 >: L, Z1 >: Z](
+  that: => ZSink[R1, E1, In1, L1, Z1]
+)(implicit trace: Trace): ZSink[R1, E1, In1, L1, Z1]
+```
+Races two sinks and returns the result of the one that completes first.
+
+### Filtering
+
+#### `filterInput`
+```scala
+def filterInput[In1 <: In](
+  p: In1 => Boolean
+)(implicit trace: Trace): ZSink[R, E, In1, L, Z]
+```
+Filters the inputs sent to the sink.
+
+#### `filterInputZIO`
+```scala
+def filterInputZIO[R1 <: R, E1 >: E, In1 <: In](
+  p: In1 => ZIO[R1, E1, Boolean]
+)(implicit trace: Trace): ZSink[R1, E1, In1, L, Z]
+```
+Effectfully filters the inputs sent to the sink.
+
+### Error Handling
+
+#### `catchAll`
+```scala
+def catchAll[R1 <: R, E2, In1 <: In, L1 >: L, Z1 >: Z](
+  f: E => ZSink[R1, E2, In1, L1, Z1]
+)(implicit trace: Trace): ZSink[R1, E2, In1, L1, Z1]
+```
+Recovers from all errors by switching to another sink.
+
+#### `refineOrDie`
+```scala
+def refineOrDie[E1](
+  pf: PartialFunction[E, E1]
+)(implicit ev1: E <:< Throwable, ev2: CanFail[E], trace: Trace): ZSink[R, E1, In, L, Z]
+```
+Keeps some errors and converts all others to defects.
+
+### Other Operations
+
+#### `collectLeftover`
+```scala
+def collectLeftover(implicit trace: Trace): ZSink[R, E, In, Nothing, (Z, Chunk[L])]
+```
+Collects the leftover values along with the result.
+
+#### `exposeLeftover`
+```scala
+def exposeLeftover(implicit trace: Trace): ZSink[R, E, In, Nothing, (Z, Chunk[L])]
+```
+Exposes the leftover values as part of the sink's result.
+
+## Symbolic Operators
+
+- `<*>` - Zip two sinks sequentially
+- `<&>` - Zip two sinks in parallel
+- `*>` - Sequence sinks, keeping right result
+- `<*` - Sequence sinks, keeping left result
+- `&>` - Parallel sequence, keeping right result
+- `<&` - Parallel sequence, keeping left result
+- `|` - Race two sinks

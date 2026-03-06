@@ -1,0 +1,264 @@
+---
+title: Fibers
+description: Learn about ZIO's lightweight concurrency primitive - fibers - that enable efficient parallel execution without thread overhead.
+---
+
+A **Fiber** is ZIO's lightweight thread of execution that never consumes more than a whole thread (but may consume much less, depending on contention and asynchronicity). Fibers are spawned by forking ZIO effects, which run concurrently with the parent effect.
+
+Fibers can be joined, yielding their result to other fibers, or interrupted, which terminates the fiber safely and releases all resources.
+
+## Creating Fibers
+
+Fibers are created by forking ZIO effects using the `.fork` method:
+
+```scala
+import zio._
+
+val program = for {
+  fiber <- ZIO.succeed(println("Running in background")).fork
+  _     <- ZIO.succeed(println("Running in foreground"))
+  _     <- fiber.join
+} yield ()
+```
+
+## Core Operations
+
+### Awaiting Fiber Completion
+
+The `await` method suspends the awaiting fiber until the result is available:
+
+```scala
+val fiber: Fiber[E, A] = ???
+val result: UIO[Exit[E, A]] = fiber.await
+```
+
+### Joining Fibers
+
+The `join` method waits for a fiber to complete and returns its result. Unlike `await`, it will fail if the fiber fails:
+
+```scala
+val fiber: Fiber[Throwable, Int] = ZIO.succeed(42).fork
+val value: IO[Throwable, Int] = fiber.flatMap(_.join)
+```
+
+<Note>
+  Joining an interrupted fiber will result in an "inner interruption" of the current fiber. This can be caught and recovered, unlike interruption triggered by another fiber.
+</Note>
+
+### Interrupting Fibers
+
+Fibers can be interrupted, which terminates them safely:
+
+```scala
+// Interrupt and wait for completion
+val interrupted: UIO[Exit[E, A]] = fiber.interrupt
+
+// Interrupt in the background
+val interruptedAsync: UIO[Unit] = fiber.interruptFork
+
+// Interrupt as a specific fiber ID
+val interruptedAs: UIO[Exit[E, A]] = fiber.interruptAs(fiberId)
+```
+
+## Fiber Composition
+
+### Zipping Fibers
+
+Combine multiple fibers into a single fiber:
+
+```scala
+val fiber1: Fiber[E, A] = ???
+val fiber2: Fiber[E, B] = ???
+
+// Zip into tuple
+val combined: Fiber[E, (A, B)] = fiber1 <*> fiber2
+
+// Keep only left result
+val leftOnly: Fiber[E, A] = fiber1 <* fiber2
+
+// Keep only right result  
+val rightOnly: Fiber[E, B] = fiber1 *> fiber2
+```
+
+### Racing Fibers
+
+Race fibers and take the first successful result:
+
+```scala
+val fiber1: Fiber[E, A] = ???
+val fiber2: Fiber[E, A] = ???
+
+// Returns first successful result, falls back to second on failure
+val raced: Fiber[E, A] = fiber1 <> fiber2
+```
+
+## Working with Multiple Fibers
+
+### Collecting Results
+
+Collect results from multiple fibers:
+
+```scala
+import zio._
+
+val fibers: List[Fiber[E, A]] = ???
+
+// Collect all results into a list
+val collected: Fiber[E, List[A]] = Fiber.collectAll(fibers)
+
+// Collect and discard results
+val discarded: Fiber[E, Unit] = Fiber.collectAllDiscard(fibers)
+```
+
+### Awaiting Multiple Fibers
+
+```scala
+val fibers: Iterable[Fiber[Any, Any]] = ???
+
+// Wait for all fibers to complete (successfully or not)
+val awaited: UIO[Unit] = Fiber.awaitAll(fibers)
+
+// Wait for all fibers to succeed
+val joined: IO[E, Unit] = Fiber.joinAll(fibers)
+```
+
+### Interrupting Multiple Fibers
+
+```scala
+val fibers: Iterable[Fiber[Any, Any]] = ???
+
+// Interrupt all fibers and wait for completion
+val interrupted: UIO[Unit] = Fiber.interruptAll(fibers)
+
+// Interrupt all as a specific fiber
+val interruptedAs: UIO[Unit] = Fiber.interruptAllAs(fiberId)(fibers)
+```
+
+## Fiber Inspection
+
+### Fiber Identity
+
+Every fiber has a unique identifier:
+
+```scala
+val fiberId: FiberId = fiber.id
+```
+
+### Polling Status
+
+Check if a fiber has completed without blocking:
+
+```scala
+val status: UIO[Option[Exit[E, A]]] = fiber.poll
+```
+
+### Getting Children
+
+Retrieve immediate children of a fiber:
+
+```scala
+val children: UIO[Chunk[Fiber.Runtime[_, _]]] = fiber.children
+```
+
+## Fiber Dumps
+
+For debugging, you can dump all running fibers:
+
+```scala
+import zio._
+
+// Dump all fibers to console
+val dump: ZIO[Any, IOException, Unit] = Fiber.dumpAll
+
+// Custom dump handler
+val customDump: ZIO[Any, E, Unit] = Fiber.dumpAllWith { dump =>
+  dump.prettyPrint.flatMap(Console.printLine(_))
+}
+```
+
+## Scoped Fibers
+
+Convert a fiber into a scoped resource that's interrupted when the scope closes:
+
+```scala
+val scopedFiber: ZIO[Scope, Nothing, Fiber[E, A]] = fiber.scoped
+```
+
+## Parallel Execution Pattern
+
+<CodeGroup>
+```scala Basic Pattern
+def parallel[A, B](io1: Task[A], io2: Task[B]): Task[(A, B)] =
+  for {
+    fiber1 <- io1.fork
+    fiber2 <- io2.fork
+    a      <- fiber1.join
+    b      <- fiber2.join
+  } yield (a, b)
+```
+
+```scala With Error Handling
+def parallelSafe[E, A, B](
+  io1: IO[E, A], 
+  io2: IO[E, B]
+): IO[E, (A, B)] =
+  for {
+    fiber1 <- io1.fork
+    fiber2 <- io2.fork
+    result <- fiber1.join.zipPar(fiber2.join)
+  } yield result
+```
+</CodeGroup>
+
+## Runtime vs Synthetic Fibers
+
+ZIO distinguishes between two types of fibers:
+
+- **Runtime Fibers** (`Fiber.Runtime`): Actual executing fibers with identity and trace
+- **Synthetic Fibers** (`Fiber.Synthetic`): Virtual fibers created from pure values or combinations
+
+```scala
+// Creating synthetic fibers
+val succeeded: Fiber[Nothing, Int] = Fiber.succeed(42)
+val failed: Fiber[String, Nothing] = Fiber.fail("error")
+val interrupted: Fiber[Nothing, Nothing] = Fiber.interruptAs(fiberId)
+val never: Fiber[Nothing, Nothing] = Fiber.never
+```
+
+<Tip>
+  Fibers are automatically cleaned up and don't leak resources. When a fiber is interrupted, all its resources are safely released.
+</Tip>
+
+## Converting to Future
+
+Convert a fiber to a Scala `Future`:
+
+```scala
+val fiber: Fiber[Throwable, A] = ???
+val future: UIO[CancelableFuture[A]] = fiber.toFuture
+
+// With custom error conversion
+val futureCustom: UIO[CancelableFuture[A]] = 
+  fiber.toFutureWith(e => new RuntimeException(e.toString))
+```
+
+## Best Practices
+
+<Card title="When to Fork" icon="rocket">
+  Fork fibers when you need:
+  - Parallel execution of independent tasks
+  - Background processing
+  - Timeouts with `race`
+  - Concurrent resource access
+</Card>
+
+<Card title="When Not to Fork" icon="ban">
+  Avoid forking when:
+  - Sequential execution is required
+  - Sharing mutable state without proper synchronization
+  - The overhead of concurrency exceeds the benefit
+</Card>
+
+<Warning>
+  Always ensure fibers are properly joined or interrupted. Use scoped fibers or resource management to prevent fiber leaks.
+</Warning>

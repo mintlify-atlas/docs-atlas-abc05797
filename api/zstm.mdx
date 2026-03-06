@@ -1,0 +1,419 @@
+---
+title: 'ZSTM'
+description: 'Software Transactional Memory effect type for composable atomic operations'
+---
+
+# ZSTM
+
+`ZSTM[R, E, A]` (aliased as `STM[E, A]` when `R = Any`) represents an effect that can be performed transactionally, resulting in a failure `E` or a value `A`. It requires an environment `R`.
+
+## Overview
+
+ZSTM is the core type for Software Transactional Memory in ZIO. It allows you to compose arbitrary atomic operations that either complete successfully, fail, or retry. Unlike traditional lock-based concurrency, STM provides:
+
+- **Composability**: Combine multiple transactional operations into a single atomic transaction
+- **Automatic retry**: Transactions automatically retry when data changes
+- **No deadlocks**: The STM runtime handles coordination without locks
+- **Rollback on failure**: Failed transactions automatically rollback all changes
+
+## Type Aliases
+
+```scala
+type STM[+E, +A] = ZSTM[Any, E, A]
+type USTM[+A] = ZSTM[Any, Nothing, A]
+type TaskSTM[+A] = ZSTM[Any, Throwable, A]
+type URSTM[-R, +A] = ZSTM[R, Nothing, A]
+```
+
+## Creating Transactions
+
+### succeed
+
+```scala
+def succeed[A](a: => A): USTM[A]
+```
+
+Creates a transaction that succeeds with the specified value.
+
+```scala
+val tx: USTM[Int] = STM.succeed(42)
+```
+
+### fail
+
+```scala
+def fail[E](e: => E): STM[E, Nothing]
+```
+
+Creates a transaction that fails with the specified error.
+
+```scala
+val tx: STM[String, Nothing] = STM.fail("error occurred")
+```
+
+### attempt
+
+```scala
+def attempt[A](a: => A): STM[Throwable, A]
+```
+
+Creates a transaction from a potentially throwing computation.
+
+```scala
+val tx: STM[Throwable, Int] = STM.attempt("123".toInt)
+```
+
+### retry
+
+```scala
+val retry: USTM[Nothing]
+```
+
+Aborts and retries the whole transaction when any of the underlying transactional variables have changed.
+
+```scala
+val tx: USTM[Unit] = STM.check(balance >= amount).orElse(STM.retry)
+```
+
+### check
+
+```scala
+def check(p: => Boolean): USTM[Unit]
+```
+
+Checks a condition, succeeding with `Unit` if true, otherwise retrying.
+
+```scala
+for {
+  balance <- accountRef.get
+  _       <- STM.check(balance >= 100) // Retry until balance >= 100
+} yield ()
+```
+
+## Running Transactions
+
+### commit / atomically
+
+```scala
+def commit(implicit trace: Trace): ZIO[R, E, A]
+def atomically[R, E, A](stm: ZSTM[R, E, A])(implicit trace: Trace): ZIO[R, E, A]
+```
+
+Commits the transaction atomically. The transaction will automatically retry if it conflicts with other transactions.
+
+```scala
+val effect: ZIO[Any, String, Int] = {
+  for {
+    ref <- TRef.make(0)
+    _   <- ref.update(_ + 1)
+    v   <- ref.get
+  } yield v
+}.commit
+```
+
+## Composition Operators
+
+### flatMap
+
+```scala
+def flatMap[R1 <: R, E1 >: E, B](f: A => ZSTM[R1, E1, B]): ZSTM[R1, E1, B]
+```
+
+Sequentially composes transactions.
+
+```scala
+for {
+  a <- tx1
+  b <- tx2(a)
+  c <- tx3(b)
+} yield c
+```
+
+### map
+
+```scala
+def map[B](f: A => B): ZSTM[R, E, B]
+```
+
+Maps the success value.
+
+```scala
+val doubled: USTM[Int] = ref.get.map(_ * 2)
+```
+
+### zipWith / zip
+
+```scala
+def zipWith[R1 <: R, E1 >: E, B, C](that: => ZSTM[R1, E1, B])(f: (A, B) => C): ZSTM[R1, E1, C]
+def zip[R1 <: R, E1 >: E, B](that: => ZSTM[R1, E1, B]): ZSTM[R1, E1, (A, B)]
+```
+
+Combines two transactions into a tuple.
+
+```scala
+val combined: USTM[(Int, String)] = tx1.zip(tx2)
+```
+
+### `orElse` / `<>` Operator
+
+```scala
+def orElse[R1 <: R, E1, A1 >: A](that: => ZSTM[R1, E1, A1]): ZSTM[R1, E1, A1]
+```
+
+Tries this transaction first, and if it fails or retries, tries the other transaction.
+
+```scala
+val tx: USTM[Int] = dequeue1.take.orElse(dequeue2.take)
+```
+
+### `orTry` / `<|>` Operator
+
+```scala
+def orTry[R1 <: R, E1 >: E, A1 >: A](that: => ZSTM[R1, E1, A1]): ZSTM[R1, E1, A1]
+```
+
+Tries this transaction first, and if it enters retry, tries the other transaction. This is the Haskell `orElse` equivalent.
+
+```scala
+val tx: USTM[Int] = getValue1.orTry(getValue2)
+```
+
+## Error Handling
+
+### catchAll
+
+```scala
+def catchAll[R1 <: R, E2, A1 >: A](h: E => ZSTM[R1, E2, A1]): ZSTM[R1, E2, A1]
+```
+
+Recovers from all errors.
+
+```scala
+val recovered: USTM[Int] = 
+  tx.catchAll(e => STM.succeed(0))
+```
+
+### fold / foldSTM
+
+```scala
+def fold[B](f: E => B, g: A => B): URSTM[R, B]
+def foldSTM[R1 <: R, E1, B](f: E => ZSTM[R1, E1, B], g: A => ZSTM[R1, E1, B]): ZSTM[R1, E1, B]
+```
+
+Folds over both failure and success cases.
+
+```scala
+val result: USTM[String] = tx.fold(
+  error => s"Failed: $error",
+  value => s"Success: $value"
+)
+```
+
+### either
+
+```scala
+def either: URSTM[R, Either[E, A]]
+```
+
+Converts the error channel into an `Either`.
+
+```scala
+val safe: USTM[Either[String, Int]] = tx.either
+```
+
+### orDie
+
+```scala
+def orDie(implicit ev1: E <:< Throwable): URSTM[R, A]
+```
+
+Translates failures into fiber deaths.
+
+```scala
+val tx: USTM[Int] = attemptTx.orDie
+```
+
+## Collection Operations
+
+### foreach
+
+```scala
+def foreach[R, E, A, B](in: Iterable[A])(f: A => ZSTM[R, E, B]): ZSTM[R, E, List[B]]
+```
+
+Applies a transactional function to each element.
+
+```scala
+val results: USTM[List[Unit]] = 
+  STM.foreach(refs)(_.update(_ + 1))
+```
+
+### collectAll
+
+```scala
+def collectAll[R, E, A](in: Iterable[ZSTM[R, E, A]]): ZSTM[R, E, List[A]]
+```
+
+Collects all transactional effects into a single transaction.
+
+```scala
+val all: USTM[List[Int]] = STM.collectAll(List(tx1, tx2, tx3))
+```
+
+### foldLeft / foldRight
+
+```scala
+def foldLeft[R, E, S, A](in: Iterable[A])(zero: S)(f: (S, A) => ZSTM[R, E, S]): ZSTM[R, E, S]
+def foldRight[R, E, S, A](in: Iterable[A])(zero: S)(f: (A, S) => ZSTM[R, E, S]): ZSTM[R, E, S]
+```
+
+Folds over elements using a transactional function.
+
+```scala
+val sum: USTM[Int] = STM.foldLeft(numbers)(0)((acc, n) => STM.succeed(acc + n))
+```
+
+## Filtering and Collection
+
+### collect
+
+```scala
+def collect[B](pf: PartialFunction[A, B]): ZSTM[R, E, B]
+```
+
+Simultaneously filters and maps the value.
+
+```scala
+val even: USTM[Int] = ref.get.collect { case n if n % 2 == 0 => n }
+```
+
+### filter / filterOrFail
+
+```scala
+def filterOrFail[E1 >: E](p: A => Boolean)(e: => E1): ZSTM[R, E1, A]
+```
+
+Filters the value, failing with the given error if the predicate fails.
+
+```scala
+val positive: STM[String, Int] = 
+  ref.get.filterOrFail(_ > 0)("Value must be positive")
+```
+
+## Advanced Operations
+
+### ensuring
+
+```scala
+def ensuring[R1 <: R](finalizer: ZSTM[R1, Nothing, Any]): ZSTM[R1, E, A]
+```
+
+Executes the finalizer whether the transaction succeeds or fails.
+
+```scala
+val safe: USTM[Int] = tx.ensuring(cleanup)
+```
+
+### loop
+
+```scala
+def loop[R, E, A, S](initial: S)(cont: S => Boolean, inc: S => S)(body: S => ZSTM[R, E, A]): ZSTM[R, E, List[A]]
+```
+
+Loops with the specified transactional function.
+
+```scala
+val results: USTM[List[Int]] = STM.loop(0)(_ < 10, _ + 1) { i =>
+  ref.update(_ + i)
+}
+```
+
+### iterate
+
+```scala
+def iterate[R, E, S](initial: S)(cont: S => Boolean)(body: S => ZSTM[R, E, S]): ZSTM[R, E, S]
+```
+
+Iterates with the specified transactional function.
+
+```scala
+val result: USTM[Int] = STM.iterate(1)(_ < 100)(n => STM.succeed(n * 2))
+```
+
+## Conditional Execution
+
+### when / unless
+
+```scala
+def when[R, E, A](b: => Boolean)(stm: => ZSTM[R, E, A]): ZSTM[R, E, Option[A]]
+def unless[R, E, A](b: => Boolean)(stm: => ZSTM[R, E, A]): ZSTM[R, E, Option[A]]
+```
+
+Conditionally executes the transaction.
+
+```scala
+val tx: USTM[Option[Unit]] = STM.when(shouldUpdate) {
+  ref.update(_ + 1)
+}
+```
+
+### ifSTM
+
+```scala
+def ifSTM[R, E](b: ZSTM[R, E, Boolean]): IfSTM[R, E]
+```
+
+Executes one of two transactions based on a boolean transaction.
+
+```scala
+val result: USTM[Int] = STM.ifSTM(ref.get.map(_ > 0))(
+  onTrue = STM.succeed(1),
+  onFalse = STM.succeed(-1)
+)
+```
+
+## Best Practices
+
+1. **Keep transactions short**: Long-running transactions increase the chance of conflicts and retries
+2. **Avoid side effects**: Transactions may be executed multiple times due to retries
+3. **Use retry wisely**: `STM.retry` will block until watched variables change
+4. **Compose freely**: STM's strength is in composing multiple operations atomically
+5. **Prefer STM over locks**: For coordinating access to shared state
+
+## Example: Bank Transfer
+
+```scala
+import zio._
+import zio.stm._
+
+def transfer(
+  from: TRef[Int],
+  to: TRef[Int],
+  amount: Int
+): UIO[Unit] = (
+  for {
+    fromBalance <- from.get
+    _           <- STM.check(fromBalance >= amount)
+    _           <- from.update(_ - amount)
+    _           <- to.update(_ + amount)
+  } yield ()
+).commit
+
+// Usage
+val program = for {
+  account1 <- TRef.makeCommit(1000)
+  account2 <- TRef.makeCommit(500)
+  _        <- transfer(account1, account2, 200)
+  balance1 <- account1.get.commit
+  balance2 <- account2.get.commit
+  _        <- Console.printLine(s"Account 1: $balance1, Account 2: $balance2")
+} yield ()
+```
+
+## See Also
+
+- [TRef](/api/tref) - Transactional references
+- [TArray](/api/tarray) - Transactional arrays
+- [TMap](/api/tmap) - Transactional maps  
+- [TQueue](/api/tqueue) - Transactional queues
+- [TSemaphore](/api/tsemaphore) - Transactional semaphores

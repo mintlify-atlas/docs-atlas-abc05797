@@ -1,0 +1,112 @@
+---
+title: "ZEnvironment"
+description: "Type-safe service container"
+---
+
+# ZEnvironment[R]
+
+`ZEnvironment[R]` is a type-safe, immutable container for services used by ZIO effects.
+
+## Type Parameters
+
+<ParamField path="R" type="type">
+  The services contained in this environment
+</ParamField>
+
+## Creating Environments
+
+### apply
+
+```scala
+def apply[A: Tag](a: A): ZEnvironment[A]
+```
+
+Creates an environment containing a single service.
+
+```scala
+val env: ZEnvironment[Config] = 
+  ZEnvironment(Config("localhost", 8080))
+```
+
+### empty
+
+```scala
+val empty: ZEnvironment[Any]
+```
+
+An empty environment.
+
+## Accessing Services
+
+### get
+
+```scala
+def get[A: Tag]: A
+```
+
+Retrieves a service from the environment.
+
+```scala
+val config: Config = env.get[Config]
+```
+
+## Modifying Environments
+
+### add
+
+```scala
+def add[A: Tag](a: A): ZEnvironment[R with A]
+```
+
+Adds a service to the environment.
+
+```scala
+val env2: ZEnvironment[Config with Logger] =
+  env.add(Logger.console)
+```
+
+### update
+
+```scala
+def update[A: Tag](f: A => A): ZEnvironment[R]
+```
+
+Updates a service in the environment.
+
+```scala
+val updated = env.update[Config](c => c.copy(port = 9090))
+```
+
+## Combining Environments
+
+### ++
+
+```scala
+def ++[R1: EnvironmentTag](that: ZEnvironment[R1]): ZEnvironment[R with R1]
+```
+
+Combines two environments.
+
+```scala
+val combined: ZEnvironment[Config with Logger] =
+  configEnv ++ loggerEnv
+```
+
+## Usage with ZIO
+
+```scala
+val effect: ZIO[Config with Logger, Nothing, Unit] = 
+  for {
+    config <- ZIO.service[Config]
+    logger <- ZIO.service[Logger]
+    _ <- logger.info(s"Starting on port ${config.port}")
+  } yield ()
+
+val result: ZIO[Any, Nothing, Unit] =
+  effect.provideEnvironment(env)
+```
+
+## See Also
+
+- [ZLayer](/api/zlayer) - Layer composition
+- [ZIO.service](/api/zio) - Service access

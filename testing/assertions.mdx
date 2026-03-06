@@ -1,0 +1,397 @@
+---
+title: Assertions
+description: Express test conditions with ZIO Test's rich assertion library
+---
+
+ZIO Test provides a comprehensive library of assertions that make it easy to express test conditions. Assertions are compositional, type-safe, and provide excellent error messages.
+
+## Smart Assertions with assertTrue
+
+The simplest way to write assertions is with `assertTrue`:
+
+```scala
+test("basic assertions") {
+  assertTrue(
+    1 + 1 == 2,
+    "hello".length == 5,
+    List(1, 2, 3).contains(2)
+  )
+}
+```
+
+When an assertion fails, you get a clear error message:
+
+```
+1 + 1 did not satisfy (2 == 3)
+```
+
+## Classic Assertions with assert
+
+For more complex scenarios, use the `assert` function with assertion combinators:
+
+```scala
+import zio.test.Assertion._
+
+test("classic assertions") {
+  assert(42)(equalTo(42)) &&
+  assert("hello")(startsWithString("hel")) &&
+  assert(List(1, 2, 3))(hasSize(equalTo(3)))
+}
+```
+
+## Common Assertions
+
+### Equality Assertions
+
+<CodeGroup>
+```scala Equal To
+assert(result)(equalTo(expected))
+true
+```
+
+```scala Not Equal
+assert(result)(not(equalTo(value)))
+```
+
+```scala Approximate
+assert(3.14)(approximatelyEquals(3.14, 0.01))
+```
+
+```scala Is True/False
+assert(condition)(isTrue)
+assert(condition)(isFalse)
+```
+</CodeGroup>
+
+### Comparison Assertions
+
+```scala
+assert(age)(isGreaterThan(18))
+assert(score)(isLessThanEqualTo(100))
+assert(value)(isWithin(0, 100))
+assert(price)(isPositive)
+assert(temperature)(isNegative)
+```
+
+### String Assertions
+
+```scala
+assert("hello world")(containsString("world"))
+assert("hello")(startsWithString("hel"))
+assert("world")(endsWithString("rld"))
+assert("test@example.com")(matchesRegex(".*@.*"))
+assert("HELLO")(equalsIgnoreCase("hello"))
+assert("")(isEmptyString)
+assert("test")(isNonEmptyString)
+```
+
+### Collection Assertions
+
+<Tabs>
+  <Tab title="Size">
+    ```scala
+    assert(List(1, 2, 3))(hasSize(equalTo(3)))
+    assert(List.empty[Int])(isEmpty)
+    assert(List(1))(isNonEmpty)
+    ```
+  </Tab>
+  <Tab title="Contains">
+    ```scala
+    assert(List(1, 2, 3))(contains(2))
+    assert(List(1, 2, 3))(exists(isGreaterThan(2)))
+    assert(List(2, 4, 6))(forall(n => n % 2 == 0))
+    ```
+  </Tab>
+  <Tab title="Sequence">
+    ```scala
+    assert(List(1, 2, 3))(startsWith(Seq(1, 2)))
+    assert(List(1, 2, 3))(endsWith(Seq(2, 3)))
+    assert(List(1, 2, 3, 2, 1))(hasSameElements(List(1, 2, 3, 2, 1)))
+    ```
+  </Tab>
+  <Tab title="First/Last">
+    ```scala
+    assert(List(1, 2, 3))(hasFirst(equalTo(1)))
+    assert(List(1, 2, 3))(hasLast(equalTo(3)))
+    assert(List(1, 2, 3))(hasAt(1)(equalTo(2)))
+    ```
+  </Tab>
+</Tabs>
+
+### Option Assertions
+
+```scala
+assert(Some(42))(isSome(equalTo(42)))
+assert(Some(42))(isSome)  // Just check it's Some
+assert(None)(isNone)
+```
+
+### Either Assertions
+
+```scala
+assert(Right(42))(isRight(equalTo(42)))
+assert(Right(42))(isRight)  // Just check it's Right
+assert(Left("error"))(isLeft(equalTo("error")))
+assert(Left("error"))(isLeft)  // Just check it's Left
+```
+
+### Exit Assertions
+
+```scala
+test("success") {
+  for {
+    exit <- ZIO.succeed(42).exit
+  } yield assert(exit)(succeeds(equalTo(42)))
+}
+
+test("failure") {
+  for {
+    exit <- ZIO.fail("error").exit
+  } yield assert(exit)(fails(equalTo("error")))
+}
+
+test("dies") {
+  for {
+    exit <- ZIO.die(new Exception("boom")).exit
+  } yield assert(exit)(dies(hasMessage(equalTo("boom"))))
+}
+```
+
+### Type Assertions
+
+```scala
+import scala.reflect.ClassTag
+
+assert(value)(isSubtype[String](anything))
+assert(exit)(diesWithA[IllegalArgumentException])
+assert(exit)(failsWithA[IOException])
+```
+
+## Combining Assertions
+
+### Logical Operators
+
+```scala
+// AND - all must be true
+assert(user)(
+  hasField("name", _.name, equalTo("Alice")) &&
+  hasField("age", _.age, isGreaterThan(18))
+)
+
+// OR - at least one must be true  
+assert(value)(
+  equalTo("admin") || equalTo("moderator")
+)
+
+// NOT - negation
+assert(list)(not(isEmpty))
+assert(value)(not(equalTo(0)))
+```
+
+### Multiple Assertions
+
+Use `assertTrue` to check multiple conditions:
+
+```scala
+test("multiple conditions") {
+  val user = User("Alice", 25, "alice@example.com")
+  
+  assertTrue(
+    user.name == "Alice",
+    user.age >= 18,
+    user.email.contains("@")
+  )
+}
+```
+
+## Custom Assertions
+
+Create your own assertions for domain-specific checks:
+
+```scala
+import zio.test.Assertion._
+
+// Simple custom assertion
+def isEven: Assertion[Int] =
+  assertion("isEven")(n => n % 2 == 0)
+
+test("custom assertion") {
+  assert(42)(isEven)
+}
+
+// Assertion with projection
+def hasValidEmail: Assertion[User] =
+  hasField("email", _.email, matchesRegex(".*@.*\\..+"))
+
+test("user has valid email") {
+  assert(user)(hasValidEmail)
+}
+```
+
+## Field Assertions
+
+Test specific fields of case classes:
+
+```scala
+case class User(name: String, age: Int, email: String)
+
+test("user fields") {
+  val user = User("Alice", 25, "alice@example.com")
+  
+  assert(user)(hasField("name", _.name, equalTo("Alice"))) &&
+  assert(user)(hasField("age", _.age, isGreaterThan(18))) &&
+  assert(user)(hasField("email", _.email, containsString("@")))
+}
+```
+
+## Assertion Error Messages
+
+ZIO Test provides detailed error messages:
+
+```scala
+test("detailed errors") {
+  val list = List(1, 2, 3)
+  assert(list)(hasSize(equalTo(5)))  
+  // Error: List(1, 2, 3).size did not satisfy (3 == 5)
+}
+```
+
+### Labeling Assertions
+
+Add custom labels to improve error messages:
+
+```scala
+test("labeled assertion") {
+  assert(result)(equalTo(expected) ?? "Result should match expected value")
+}
+```
+
+## Testing Exceptions
+
+### With assertTrue
+
+```scala
+test("throws exception") {
+  val result = ZIO.attempt("hello".toInt).exit
+  result.map(exit => assertTrue(exit.isFailure))
+}
+```
+
+### With assert and throws
+
+```scala
+test("throws specific exception") {
+  assert("invalid".toInt)(throws(isSubtype[NumberFormatException](anything)))
+}
+
+test("throws any exception") {
+  assert(throw new Exception)(throwsA[Exception])
+}
+```
+
+## Sorted Collections
+
+```scala
+test("sorted lists") {
+  assert(List(1, 2, 3, 4))(isSorted) &&
+  assert(List(4, 3, 2, 1))(isSortedReverse)
+}
+```
+
+## Distinct Elements
+
+```scala
+test("unique elements") {
+  assert(List(1, 2, 3))(isDistinct) &&
+  assert(Set(1, 2, 3))(isDistinct)
+}
+```
+
+## Map Assertions
+
+```scala
+test("map operations") {
+  val map = Map("a" -> 1, "b" -> 2, "c" -> 3)
+  
+  assert(map)(hasKey("a")) &&
+  assert(map)(hasKey("b", equalTo(2))) &&
+  assert(map)(hasKeys(contains("a"))) &&
+  assert(map)(hasValues(contains(2)))
+}
+```
+
+## Advanced Patterns
+
+### Recursive Assertions
+
+```scala
+def isValidTree[A]: Assertion[Tree[A]] =
+  assertionRec("isValidTree") {
+    hasField("left", _.left, isSome(isValidTree)) &&
+    hasField("right", _.right, isSome(isValidTree))
+  }
+```
+
+### Conditional Assertions
+
+```scala
+test("conditional") {
+  val result = computeResult()
+  
+  if (result > 0)
+    assert(result)(isGreaterThan(0))
+  else
+    assert(result)(isLessThanEqualTo(0))
+}
+```
+
+## Best Practices
+
+<AccordionGroup>
+  <Accordion title="Use assertTrue for simple checks">
+    For straightforward boolean conditions, `assertTrue` is more concise:
+    ```scala
+    // Prefer this
+    assertTrue(list.size == 3)
+    
+    // Over this
+    assert(list)(hasSize(equalTo(3)))
+    ```
+  </Accordion>
+
+  <Accordion title="Use assert for complex assertions">
+    When you need composition or better error messages:
+    ```scala
+    assert(user)(
+      hasField("name", _.name, startsWithString("A")) &&
+      hasField("age", _.age, isWithin(18, 65))
+    )
+    ```
+  </Accordion>
+
+  <Accordion title="Combine related assertions">
+    Group related checks together:
+    ```scala
+    assertTrue(
+      list.nonEmpty,
+      list.head == expectedFirst,
+      list.last == expectedLast
+    )
+    ```
+  </Accordion>
+
+  <Accordion title="Create domain-specific assertions">
+    Build reusable assertions for your domain:
+    ```scala
+    def isValidUser: Assertion[User] =
+      hasField("name", _.name, isNonEmptyString) &&
+      hasField("email", _.email, matchesRegex(emailRegex))
+    ```
+  </Accordion>
+</AccordionGroup>
+
+## See Also
+
+- [Testing Overview](/testing/overview) - Introduction to ZIO Test
+- [Test Aspects](/testing/test-aspects) - Modify test behavior
+- [Property Testing](/testing/property-testing) - Generate test cases automatically

@@ -1,0 +1,271 @@
+---
+title: Queue[A]
+description: API reference for ZIO's Queue concurrent queue
+---
+
+## Overview
+
+A `Queue[A]` is a lightweight, asynchronous queue into which values can be enqueued and from which elements can be dequeued. Queues support different backpressure strategies including bounded, unbounded, dropping, and sliding.
+
+## Type Signature
+
+```scala
+sealed abstract class Queue[A] extends Dequeue[A] with Enqueue[A]
+```
+
+<ParamField path="A" type="type">
+  The type of elements in the queue
+</ParamField>
+
+## Constructors
+
+### bounded
+
+Makes a new bounded queue. When capacity is reached, additional `offer` calls will suspend until there is room.
+
+```scala
+def bounded[A](requestedCapacity: => Int)(implicit trace: Trace): UIO[Queue[A]]
+```
+
+<ParamField path="requestedCapacity" type="Int">
+  The capacity of the queue. Use power of 2 for best performance.
+</ParamField>
+
+### unbounded
+
+Makes a new unbounded queue.
+
+```scala
+def unbounded[A](implicit trace: Trace): UIO[Queue[A]]
+```
+
+### dropping
+
+Makes a new bounded queue with dropping strategy. New elements are dropped when at capacity.
+
+```scala
+def dropping[A](requestedCapacity: => Int)(implicit trace: Trace): UIO[Queue[A]]
+```
+
+<ParamField path="requestedCapacity" type="Int">
+  The capacity of the queue
+</ParamField>
+
+### sliding
+
+Makes a new bounded queue with sliding strategy. Old elements are dropped when at capacity.
+
+```scala
+def sliding[A](requestedCapacity: => Int)(implicit trace: Trace): UIO[Queue[A]]
+```
+
+<ParamField path="requestedCapacity" type="Int">
+  The capacity of the queue
+</ParamField>
+
+## Key Methods
+
+### offer
+
+Offers a value to the queue.
+
+```scala
+def offer(a: A)(implicit trace: Trace): UIO[Boolean]
+```
+
+<ParamField path="a" type="A">
+  The value to enqueue
+</ParamField>
+
+**Returns:** `true` if the value was successfully enqueued, `false` otherwise (for dropping queues)
+
+### offerAll
+
+Offers multiple values to the queue.
+
+```scala
+def offerAll[A1 <: A](as: Iterable[A1])(implicit trace: Trace): UIO[Chunk[A1]]
+```
+
+<ParamField path="as" type="Iterable[A1]">
+  The values to enqueue
+</ParamField>
+
+**Returns:** Any values that could not be enqueued
+
+### take
+
+Takes a value from the queue, suspending if the queue is empty.
+
+```scala
+def take(implicit trace: Trace): UIO[A]
+```
+
+**Returns:** The next value in the queue
+
+### takeAll
+
+Takes all values from the queue.
+
+```scala
+def takeAll(implicit trace: Trace): UIO[Chunk[A]]
+```
+
+**Returns:** All current values in the queue
+
+### takeUpTo
+
+Takes up to the specified number of values from the queue.
+
+```scala
+def takeUpTo(max: Int)(implicit trace: Trace): UIO[Chunk[A]]
+```
+
+<ParamField path="max" type="Int">
+  The maximum number of elements to take
+</ParamField>
+
+### poll
+
+Takes a value from the queue if available.
+
+```scala
+def poll(implicit trace: Trace): UIO[Option[A]]
+```
+
+**Returns:** `Some(value)` if available, `None` otherwise
+
+### size
+
+Returns the current size of the queue.
+
+```scala
+def size(implicit trace: Trace): UIO[Int]
+```
+
+### capacity
+
+Returns the capacity of the queue.
+
+```scala
+def capacity: Int
+```
+
+### isEmpty
+
+Checks whether the queue is currently empty.
+
+```scala
+def isEmpty(implicit trace: Trace): UIO[Boolean]
+```
+
+### isFull
+
+Checks whether the queue is currently full.
+
+```scala
+def isFull(implicit trace: Trace): UIO[Boolean]
+```
+
+### shutdown
+
+Shuts down the queue, interrupting all waiting fibers.
+
+```scala
+def shutdown(implicit trace: Trace): UIO[Unit]
+```
+
+### awaitShutdown
+
+Waits until the queue is shut down.
+
+```scala
+def awaitShutdown(implicit trace: Trace): UIO[Unit]
+```
+
+## Examples
+
+### Basic Producer-Consumer
+
+```scala
+import zio._
+
+val program = for {
+  queue    <- Queue.bounded[Int](10)
+  producer <- queue.offerAll(List(1, 2, 3, 4, 5)).fork
+  consumer <- queue.take.fork
+  _        <- producer.join
+  value    <- consumer.join
+} yield value
+// value: 1
+```
+
+### Unbounded Queue
+
+```scala
+val program = for {
+  queue <- Queue.unbounded[String]
+  _     <- queue.offer("Hello")
+  _     <- queue.offer("World")
+  msg1  <- queue.take
+  msg2  <- queue.take
+} yield (msg1, msg2)
+// result: ("Hello", "World")
+```
+
+### Dropping Strategy
+
+```scala
+val program = for {
+  queue  <- Queue.dropping[Int](2)
+  _      <- queue.offerAll(List(1, 2, 3, 4, 5))
+  size   <- queue.size
+  items  <- queue.takeAll
+} yield (size, items)
+// result: (2, Chunk(1, 2))
+```
+
+### Sliding Strategy
+
+```scala
+val program = for {
+  queue  <- Queue.sliding[Int](2)
+  _      <- queue.offerAll(List(1, 2, 3, 4, 5))
+  size   <- queue.size
+  items  <- queue.takeAll
+} yield (size, items)
+// result: (2, Chunk(4, 5))
+```
+
+### Parallel Producers and Consumers
+
+```scala
+val program = for {
+  queue     <- Queue.bounded[Int](100)
+  producer1 <- queue.offerAll(1 to 50).fork
+  producer2 <- queue.offerAll(51 to 100).fork
+  consumer1 <- queue.take.repeatN(24).fork
+  consumer2 <- queue.take.repeatN(24).fork
+  consumer3 <- queue.take.repeatN(24).fork
+  consumer4 <- queue.take.repeatN(24).fork
+  _         <- producer1.join
+  _         <- producer2.join
+  _         <- consumer1.join
+  _         <- consumer2.join
+  _         <- consumer3.join
+  _         <- consumer4.join
+  remaining <- queue.takeAll
+} yield remaining.size
+```
+
+### Graceful Shutdown
+
+```scala
+val program = for {
+  queue    <- Queue.bounded[Int](10)
+  consumer <- queue.take.repeatWhile(_ => true).fork
+  _        <- queue.offerAll(List(1, 2, 3))
+  _        <- queue.shutdown
+  _        <- consumer.join.ignore
+} yield ()
+```

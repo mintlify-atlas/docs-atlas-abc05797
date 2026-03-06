@@ -1,0 +1,247 @@
+---
+title: Promise[E, A]
+description: API reference for ZIO's Promise async coordination primitive
+---
+
+## Overview
+
+A `Promise[E, A]` represents an asynchronous variable that can be set exactly once, with the ability for an arbitrary number of fibers to suspend (by calling `await`) and automatically resume when the variable is set.
+
+Promises can be used for building primitive actions whose completions require the coordinated action of multiple fibers, and for building higher-level concurrent or asynchronous structures.
+
+## Type Signature
+
+```scala
+final class Promise[E, A] private (blockingOn: FiberId) extends Serializable
+```
+
+<ParamField path="E" type="type">
+  The error type
+</ParamField>
+
+<ParamField path="A" type="type">
+  The success type
+</ParamField>
+
+## Constructors
+
+### make
+
+Makes a new promise to be completed by the fiber creating the promise.
+
+```scala
+def make[E, A](implicit trace: Trace): UIO[Promise[E, A]]
+```
+
+### makeAs
+
+Makes a new promise to be completed by the fiber with the specified id.
+
+```scala
+def makeAs[E, A](fiberId: => FiberId)(implicit trace: Trace): UIO[Promise[E, A]]
+```
+
+<ParamField path="fiberId" type="FiberId">
+  The ID of the fiber that will complete the promise
+</ParamField>
+
+## Key Methods
+
+### await
+
+Retrieves the value of the promise, suspending the fiber until the result is available.
+
+```scala
+def await(implicit trace: Trace): IO[E, A]
+```
+
+**Returns:** The value of the completed promise
+
+### succeed
+
+Completes the promise with the specified value.
+
+```scala
+def succeed(a: A)(implicit trace: Trace): UIO[Boolean]
+```
+
+<ParamField path="a" type="A">
+  The success value
+</ParamField>
+
+**Returns:** `true` if the promise was completed, `false` if it was already completed
+
+### fail
+
+Fails the promise with the specified error.
+
+```scala
+def fail(e: E)(implicit trace: Trace): UIO[Boolean]
+```
+
+<ParamField path="e" type="E">
+  The error value
+</ParamField>
+
+**Returns:** `true` if the promise was completed, `false` if it was already completed
+
+### failCause
+
+Fails the promise with the specified cause.
+
+```scala
+def failCause(e: Cause[E])(implicit trace: Trace): UIO[Boolean]
+```
+
+<ParamField path="e" type="Cause[E]">
+  The cause of failure
+</ParamField>
+
+### complete
+
+Completes the promise with the result of the specified effect.
+
+```scala
+def complete(io: IO[E, A])(implicit trace: Trace): UIO[Boolean]
+```
+
+<ParamField path="io" type="IO[E, A]">
+  The effect whose result will complete the promise
+</ParamField>
+
+### completeWith
+
+Completes the promise with the specified effect. The effect will be evaluated each time the promise is awaited.
+
+```scala
+def completeWith(io: IO[E, A])(implicit trace: Trace): UIO[Boolean]
+```
+
+<ParamField path="io" type="IO[E, A]">
+  The effect to complete with
+</ParamField>
+
+### done
+
+Exits the promise with the specified exit value.
+
+```scala
+def done(e: Exit[E, A])(implicit trace: Trace): UIO[Boolean]
+```
+
+<ParamField path="e" type="Exit[E, A]">
+  The exit value
+</ParamField>
+
+### interrupt
+
+Completes the promise with interruption.
+
+```scala
+def interrupt(implicit trace: Trace): UIO[Boolean]
+```
+
+### interruptAs
+
+Completes the promise with interruption as if from the specified fiber.
+
+```scala
+def interruptAs(fiberId: FiberId)(implicit trace: Trace): UIO[Boolean]
+```
+
+### isDone
+
+Checks if the promise has already been completed.
+
+```scala
+def isDone(implicit trace: Trace): UIO[Boolean]
+```
+
+### poll
+
+Checks for completion and returns the result if available.
+
+```scala
+def poll(implicit trace: Trace): UIO[Option[IO[E, A]]]
+```
+
+**Returns:** `Some(result)` if completed, `None` otherwise
+
+## Examples
+
+### Basic Coordination
+
+```scala
+import zio._
+
+val program = for {
+  promise <- Promise.make[Nothing, Int]
+  _       <- promise.succeed(42).delay(1.second).fork
+  value   <- promise.await
+} yield value
+// value: 42 (after 1 second)
+```
+
+### Producer-Consumer Pattern
+
+```scala
+val program = for {
+  promise  <- Promise.make[Nothing, String]
+  producer <- (ZIO.sleep(1.second) *> promise.succeed("data")).fork
+  consumer <- promise.await.fork
+  result   <- consumer.join
+} yield result
+// result: "data"
+```
+
+### One-Time Latch
+
+```scala
+val program = for {
+  latch <- Promise.make[Nothing, Unit]
+  fiber1 <- (latch.await *> ZIO.succeed("A")).fork
+  fiber2 <- (latch.await *> ZIO.succeed("B")).fork
+  fiber3 <- (latch.await *> ZIO.succeed("C")).fork
+  _      <- ZIO.sleep(1.second)
+  _      <- latch.succeed(())
+  results <- ZIO.collectAll(List(fiber1.join, fiber2.join, fiber3.join))
+} yield results
+// results: List("A", "B", "C")
+```
+
+### Error Handling
+
+```scala
+val program = for {
+  promise <- Promise.make[String, Int]
+  _       <- promise.fail("Error occurred").fork
+  result  <- promise.await.either
+} yield result
+// result: Left("Error occurred")
+```
+
+### Checking Completion
+
+```scala
+val program = for {
+  promise <- Promise.make[Nothing, Int]
+  isDone1 <- promise.isDone
+  _       <- promise.succeed(42)
+  isDone2 <- promise.isDone
+} yield (isDone1, isDone2)
+// result: (false, true)
+```
+
+### Multiple Awaiters
+
+```scala
+val program = for {
+  promise  <- Promise.make[Nothing, Int]
+  awaiter1 <- promise.await.fork
+  awaiter2 <- promise.await.fork
+  awaiter3 <- promise.await.fork
+  _        <- promise.succeed(100)
+  results  <- ZIO.collectAll(List(awaiter1.join, awaiter2.join, awaiter3.join))
+} yield results
+// results: List(100, 100, 100)
+```

@@ -1,0 +1,555 @@
+---
+title: 'Service Pattern'
+description: 'Idiomatic patterns for defining and using services in ZIO'
+icon: 'diagram-project'
+---
+
+# Service Pattern
+
+The Service Pattern is the idiomatic way to define services in ZIO applications. It provides a consistent structure for service interfaces, implementations, and layers that makes your code maintainable, testable, and composable.
+
+## Anatomy of a Service
+
+A complete service definition consists of three parts:
+
+1. **Service Interface** - Defines the service contract
+2. **Live Implementation** - Production implementation
+3. **Layer Constructor** - ZLayer for dependency injection
+
+## Basic Pattern
+
+### Service Definition
+
+```scala
+import zio._
+
+// 1. Service Interface
+trait UserService {
+  def createUser(name: String): Task[User]
+  def getUser(id: UserId): Task[Option[User]]
+  def deleteUser(id: UserId): Task[Unit]
+}
+
+// 2. Live Implementation
+case class UserServiceLive(
+  database: Database,
+  emailService: EmailService
+) extends UserService {
+  
+  def createUser(name: String): Task[User] = 
+    for {
+      user <- database.insertUser(name)
+      _    <- emailService.sendWelcome(user.email)
+    } yield user
+  
+  def getUser(id: UserId): Task[Option[User]] = 
+    database.findUser(id)
+  
+  def deleteUser(id: UserId): Task[Unit] = 
+    database.deleteUser(id)
+}
+
+// 3. Companion Object with Layer
+object UserService {
+  val live: URLayer[Database with EmailService, UserService] = 
+    ZLayer.fromFunction(UserServiceLive.apply _)
+}
+```
+
+### Using the Service
+
+```scala
+val program: ZIO[UserService, Throwable, Unit] = 
+  for {
+    service <- ZIO.service[UserService]
+    user    <- service.createUser("Alice")
+    _       <- Console.printLine(s"Created user: ${user.name}")
+  } yield ()
+
+// Provide dependencies
+val runnable = program.provide(
+  UserService.live,
+  Database.live,
+  EmailService.live
+)
+```
+
+## Accessor Pattern
+
+Provide convenient accessors for common operations:
+
+```scala
+object UserService {
+  val live: URLayer[Database with EmailService, UserService] = 
+    ZLayer.fromFunction(UserServiceLive.apply _)
+  
+  // Accessor methods
+  def createUser(name: String): ZIO[UserService, Throwable, User] =
+    ZIO.serviceWithZIO[UserService](_.createUser(name))
+  
+  def getUser(id: UserId): ZIO[UserService, Throwable, Option[User]] =
+    ZIO.serviceWithZIO[UserService](_.getUser(id))
+  
+  def deleteUser(id: UserId): ZIO[UserService, Throwable, Unit] =
+    ZIO.serviceWithZIO[UserService](_.deleteUser(id))
+}
+```
+
+Now you can write more concise code:
+
+```scala
+val program: ZIO[UserService, Throwable, Unit] = 
+  for {
+    user <- UserService.createUser("Alice")  // No ZIO.service needed!
+    _    <- Console.printLine(s"Created: ${user.name}")
+  } yield ()
+```
+
+## Multiple Implementations
+
+Provide different implementations for different contexts:
+
+```scala
+object UserService {
+  // Production implementation
+  val live: URLayer[Database with EmailService, UserService] = 
+    ZLayer.fromFunction(UserServiceLive.apply _)
+  
+  // In-memory test implementation
+  val test: ULayer[UserService] = 
+    ZLayer.succeed(new UserService {
+      private val users = scala.collection.mutable.Map.empty[UserId, User]
+      
+      def createUser(name: String): Task[User] = 
+        ZIO.succeed {
+          val user = User(UserId.random(), name)
+          users(user.id) = user
+          user
+        }
+      
+      def getUser(id: UserId): Task[Option[User]] = 
+        ZIO.succeed(users.get(id))
+      
+      def deleteUser(id: UserId): Task[Unit] = 
+        ZIO.succeed(users.remove(id))
+    })
+  
+  // Mock for testing specific scenarios
+  def mock(behavior: MockBehavior): ULayer[UserService] = 
+    ZLayer.succeed(new UserServiceMock(behavior))
+}
+```
+
+## Resource Management
+
+For services that need initialization and cleanup:
+
+```scala
+case class DatabaseLive(pool: ConnectionPool) extends Database {
+  def query(sql: String): Task[ResultSet] = ???
+}
+
+object Database {
+  val live: ZLayer[DbConfig, Throwable, Database] = 
+    ZLayer.scoped {
+      for {
+        config <- ZIO.service[DbConfig]
+        pool   <- ZIO.acquireRelease(
+          acquire = ZIO.attempt(ConnectionPool.create(config))
+        )(
+          release = pool => ZIO.succeed(pool.shutdown())
+        )
+      } yield DatabaseLive(pool)
+    }
+}
+```
+
+## Configuration Pattern
+
+Combine configuration with implementation:
+
+```scala
+case class HttpConfig(
+  host: String,
+  port: Int,
+  timeout: Duration
+)
+
+trait HttpClient {
+  def get(url: String): Task[Response]
+}
+
+object HttpClient {
+  // Layer that requires external config
+  val live: URLayer[HttpConfig, HttpClient] = 
+    ZLayer.fromFunction((config: HttpConfig) =>
+      HttpClientLive(config.host, config.port, config.timeout)
+    )
+  
+  // Convenience layer with default config
+  val default: ULayer[HttpClient] = 
+    ZLayer.succeed(HttpConfig("localhost", 8080, 30.seconds)) >>>
+      live
+}
+```
+
+## Complex Dependencies
+
+Handle services with multiple dependencies:
+
+```scala
+trait OrderService {
+  def placeOrder(order: Order): Task[OrderId]
+}
+
+case class OrderServiceLive(
+  database: Database,
+  paymentService: PaymentService,
+  inventoryService: InventoryService,
+  notificationService: NotificationService
+) extends OrderService {
+  
+  def placeOrder(order: Order): Task[OrderId] = 
+    for {
+      _       <- inventoryService.reserve(order.items)
+      payment <- paymentService.charge(order.total)
+      orderId <- database.saveOrder(order, payment)
+      _       <- notificationService.sendConfirmation(order.customer, orderId)
+    } yield orderId
+}
+
+object OrderService {
+  val live: URLayer[
+    Database with PaymentService with InventoryService with NotificationService,
+    OrderService
+  ] = ZLayer {
+    for {
+      db    <- ZIO.service[Database]
+      pay   <- ZIO.service[PaymentService]
+      inv   <- ZIO.service[InventoryService]
+      notif <- ZIO.service[NotificationService]
+    } yield OrderServiceLive(db, pay, inv, notif)
+  }
+  
+  // Or more concisely
+  val live2: URLayer[
+    Database with PaymentService with InventoryService with NotificationService,
+    OrderService
+  ] = ZLayer.fromFunction(OrderServiceLive.apply _)
+}
+```
+
+## Testing Patterns
+
+### Test Implementation
+
+```scala
+class UserServiceSpec extends ZIOSpecDefault {
+  def spec = suite("UserService")(
+    test("creates users") {
+      for {
+        user <- UserService.createUser("Alice")
+      } yield assertTrue(user.name == "Alice")
+    }.provide(
+      UserService.test  // Use test implementation
+    ),
+    
+    test("creates users with real DB") {
+      for {
+        user <- UserService.createUser("Bob")
+        found <- UserService.getUser(user.id)
+      } yield assertTrue(found.contains(user))
+    }.provide(
+      UserService.live,
+      Database.test,        // Test database
+      EmailService.mock     // Mock email service
+    )
+  )
+}
+```
+
+### Mock Behavior
+
+```scala
+trait MockBehavior {
+  def onCreateUser(name: String): Task[User]
+  def onGetUser(id: UserId): Task[Option[User]]
+}
+
+class UserServiceMock(behavior: MockBehavior) extends UserService {
+  def createUser(name: String): Task[User] = 
+    behavior.onCreateUser(name)
+  
+  def getUser(id: UserId): Task[Option[User]] = 
+    behavior.onGetUser(id)
+  
+  def deleteUser(id: UserId): Task[Unit] = 
+    ZIO.unit
+}
+
+object UserService {
+  def mock(behavior: MockBehavior): ULayer[UserService] = 
+    ZLayer.succeed(new UserServiceMock(behavior))
+}
+
+// In tests
+val testBehavior = new MockBehavior {
+  def onCreateUser(name: String) = 
+    ZIO.fail(new Exception("Database error"))
+  
+  def onGetUser(id: UserId) = 
+    ZIO.succeed(Some(User(id, "Test User")))
+}
+
+val test = program.provide(
+  UserService.mock(testBehavior)
+)
+```
+
+## Best Practices
+
+<AccordionGroup>
+  <Accordion title="1. Define trait for service interface">
+    Always define a trait for your service interface, even if you only have one implementation:
+    
+    ```scala
+    trait UserService {  // Good
+      def getUser(id: UserId): Task[Option[User]]
+    }
+    
+    class UserService {  // Bad - can't easily mock
+      def getUser(id: UserId): Task[Option[User]] = ???
+    }
+    ```
+  </Accordion>
+  
+  <Accordion title="2. Use case classes for implementations">
+    Case classes provide free implementations of equals, hashCode, and copy:
+    
+    ```scala
+    case class UserServiceLive(db: Database) extends UserService
+    ```
+  </Accordion>
+  
+  <Accordion title="3. Keep layers in companion objects">
+    Define layers in the companion object for discoverability:
+    
+    ```scala
+    object UserService {
+      val live: URLayer[Database, UserService] = ???
+      val test: ULayer[UserService] = ???
+    }
+    ```
+  </Accordion>
+  
+  <Accordion title="4. Provide accessor methods">
+    Make service methods accessible without explicit `ZIO.service`:
+    
+    ```scala
+    object UserService {
+      def getUser(id: UserId): ZIO[UserService, Throwable, Option[User]] =
+        ZIO.serviceWithZIO[UserService](_.getUser(id))
+    }
+    ```
+  </Accordion>
+  
+  <Accordion title="5. Use descriptive layer names">
+    - `live` - Production implementation
+    - `test` - Test implementation (in-memory, simplified)
+    - `mock` - Configurable mock for specific test scenarios
+    - `default` - Convenience layer with sensible defaults
+  </Accordion>
+  
+  <Accordion title="6. Keep business logic in implementations">
+    Don't leak business logic into accessor methods:
+    
+    ```scala
+    // Good
+    def createUser(name: String): ZIO[UserService, E, User] =
+      ZIO.serviceWithZIO[UserService](_.createUser(name))
+    
+    // Bad - business logic in accessor
+    def createUser(name: String): ZIO[UserService, E, User] =
+      for {
+        service <- ZIO.service[UserService]
+        validated <- validateName(name)  // Wrong place!
+        user <- service.createUser(validated)
+      } yield user
+    ```
+  </Accordion>
+</AccordionGroup>
+
+## Common Variations
+
+### Stateless Services
+
+For services without state, use object:
+
+```scala
+trait MathService {
+  def add(a: Int, b: Int): UIO[Int]
+}
+
+object MathServiceLive extends MathService {
+  def add(a: Int, b: Int): UIO[Int] = 
+    ZIO.succeed(a + b)
+}
+
+object MathService {
+  val live: ULayer[MathService] = 
+    ZLayer.succeed(MathServiceLive)
+}
+```
+
+### Service with Background Tasks
+
+```scala
+case class CacheLive(data: Ref[Map[String, String]]) extends Cache {
+  def get(key: String): UIO[Option[String]] = 
+    data.get.map(_.get(key))
+  
+  def put(key: String, value: String): UIO[Unit] = 
+    data.update(_ + (key -> value))
+}
+
+object Cache {
+  val live: ZLayer[Any, Nothing, Cache] = 
+    ZLayer.scoped {
+      for {
+        ref   <- Ref.make(Map.empty[String, String])
+        cache  = CacheLive(ref)
+        // Start background cleanup task
+        _     <- cache.cleanup.repeat(Schedule.fixed(1.hour)).forkScoped
+      } yield cache
+    }
+}
+```
+
+## Migration from ZIO 1.x
+
+<Warning>
+ZIO 2.x removed the `Has` type wrapper:
+
+```scala
+// ZIO 1.x
+type Env = Has[Database] with Has[Cache]
+val layer: URLayer[Has[Config], Has[Database]]
+
+// ZIO 2.x
+type Env = Database with Cache
+val layer: URLayer[Config, Database]
+```
+</Warning>
+
+## Full Example
+
+Complete service with all patterns:
+
+```scala
+import zio._
+
+// Domain types
+case class UserId(value: String)
+case class User(id: UserId, name: String, email: String)
+
+// Service interface
+trait UserService {
+  def create(name: String, email: String): Task[User]
+  def get(id: UserId): Task[Option[User]]
+  def delete(id: UserId): Task[Unit]
+  def list(): Task[List[User]]
+}
+
+// Implementation
+case class UserServiceLive(
+  database: Database,
+  emailService: EmailService,
+  logger: Logger
+) extends UserService {
+  
+  def create(name: String, email: String): Task[User] = 
+    for {
+      _    <- logger.info(s"Creating user: $name")
+      user <- database.insertUser(name, email)
+      _    <- emailService.sendWelcome(email)
+      _    <- logger.info(s"User created: ${user.id}")
+    } yield user
+  
+  def get(id: UserId): Task[Option[User]] = 
+    database.findUser(id)
+  
+  def delete(id: UserId): Task[Unit] = 
+    for {
+      _ <- logger.info(s"Deleting user: $id")
+      _ <- database.deleteUser(id)
+    } yield ()
+  
+  def list(): Task[List[User]] = 
+    database.listUsers()
+}
+
+// Companion object with layers and accessors
+object UserService {
+  // Layers
+  val live: URLayer[Database with EmailService with Logger, UserService] = 
+    ZLayer.fromFunction(UserServiceLive.apply _)
+  
+  val test: ULayer[UserService] = 
+    ZLayer.succeed(new UserService {
+      private val users = scala.collection.concurrent.TrieMap.empty[UserId, User]
+      
+      def create(name: String, email: String): Task[User] = 
+        ZIO.succeed {
+          val user = User(UserId(java.util.UUID.randomUUID.toString), name, email)
+          users(user.id) = user
+          user
+        }
+      
+      def get(id: UserId): Task[Option[User]] = 
+        ZIO.succeed(users.get(id))
+      
+      def delete(id: UserId): Task[Unit] = 
+        ZIO.succeed(users.remove(id))
+      
+      def list(): Task[List[User]] = 
+        ZIO.succeed(users.values.toList)
+    })
+  
+  // Accessors
+  def create(name: String, email: String): ZIO[UserService, Throwable, User] =
+    ZIO.serviceWithZIO[UserService](_.create(name, email))
+  
+  def get(id: UserId): ZIO[UserService, Throwable, Option[User]] =
+    ZIO.serviceWithZIO[UserService](_.get(id))
+  
+  def delete(id: UserId): ZIO[UserService, Throwable, Unit] =
+    ZIO.serviceWithZIO[UserService](_.delete(id))
+  
+  def list(): ZIO[UserService, Throwable, List[User]] =
+    ZIO.serviceWithZIO[UserService](_.list())
+}
+
+// Usage
+object Main extends ZIOAppDefault {
+  val program = 
+    for {
+      user  <- UserService.create("Alice", "alice@example.com")
+      _     <- Console.printLine(s"Created: $user")
+      users <- UserService.list()
+      _     <- Console.printLine(s"All users: $users")
+    } yield ()
+  
+  def run = program.provide(
+    UserService.live,
+    Database.live,
+    EmailService.live,
+    Logger.live
+  )
+}
+```
+
+## See Also
+
+- [ZLayer](/services/zlayer) - Layer construction and composition
+- [ZEnvironment](/services/zenvironment) - The underlying service container
+- [Testing Guide](/testing/overview) - Testing ZIO applications

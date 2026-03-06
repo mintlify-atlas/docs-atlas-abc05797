@@ -1,0 +1,505 @@
+---
+title: 'TArray'
+description: 'Transactional array for atomic operations on indexed collections'
+---
+
+# TArray
+
+`TArray[A]` is a transactional array that wraps an array of `TRef[A]` elements and provides convenient methods for atomic operations on indexed collections.
+
+## Overview
+
+TArray provides transactional access to an array of values. All operations are atomic and can be composed with other STM operations. Unlike regular arrays, TArray operations participate in STM transactions and benefit from automatic retry and rollback.
+
+## Creating TArray
+
+### make
+
+```scala
+def make[A](data: A*): USTM[TArray[A]]
+```
+
+Creates a new `TArray` initialized with the specified values.
+
+```scala
+val createArray: USTM[TArray[Int]] = 
+  TArray.make(1, 2, 3, 4, 5)
+```
+
+### fromIterable
+
+```scala
+def fromIterable[A](data: => Iterable[A]): USTM[TArray[A]]
+```
+
+Creates a `TArray` from an iterable collection.
+
+```scala
+val createArray: USTM[TArray[String]] = 
+  TArray.fromIterable(List("a", "b", "c"))
+```
+
+### empty
+
+```scala
+def empty[A]: USTM[TArray[A]]
+```
+
+Creates an empty `TArray`.
+
+```scala
+val emptyArray: USTM[TArray[Int]] = TArray.empty
+```
+
+## Element Access
+
+### apply (get element)
+
+```scala
+def apply(index: Int): USTM[A]
+```
+
+Retrieves the value at the specified index.
+
+```scala
+val tx: USTM[Int] = for {
+  arr <- TArray.make(10, 20, 30)
+  v   <- arr(1) // Gets 20
+} yield v
+```
+
+### update
+
+```scala
+def update(index: Int, fn: A => A): USTM[Unit]
+```
+
+Updates the element at the specified index using a function.
+
+```scala
+val tx: USTM[Unit] = for {
+  arr <- TArray.make(1, 2, 3)
+  _   <- arr.update(0, _ * 10) // First element becomes 10
+} yield ()
+```
+
+### updateSTM
+
+```scala
+def updateSTM[E](index: Int, fn: A => STM[E, A]): STM[E, Unit]
+```
+
+Updates an element using a transactional function.
+
+```scala
+val tx: STM[String, Unit] = for {
+  arr <- TArray.make(1, 2, 3)
+  _   <- arr.updateSTM(0, n => 
+           if (n > 0) STM.succeed(n * 2)
+           else STM.fail("negative value")
+         )
+} yield ()
+```
+
+## Array Information
+
+### size
+
+```scala
+val size: Int
+```
+
+Returns the size of the array.
+
+```scala
+val tx: USTM[Int] = for {
+  arr <- TArray.make(1, 2, 3, 4, 5)
+} yield arr.size // Returns 5
+```
+
+### firstOption / lastOption
+
+```scala
+def firstOption: USTM[Option[A]]
+def lastOption: USTM[Option[A]]
+```
+
+Returns the first or last element if the array is non-empty.
+
+```scala
+val tx: USTM[Option[Int]] = for {
+  arr   <- TArray.make(10, 20, 30)
+  first <- arr.firstOption
+  last  <- arr.lastOption
+} yield first // Some(10)
+```
+
+## Searching and Finding
+
+### find / findLast
+
+```scala
+def find(p: A => Boolean): USTM[Option[A]]
+def findLast(p: A => Boolean): USTM[Option[A]]
+```
+
+Finds the first or last element matching a predicate.
+
+```scala
+val tx: USTM[Option[Int]] = for {
+  arr    <- TArray.make(1, 5, 10, 15, 20)
+  result <- arr.find(_ > 10) // Some(15)
+} yield result
+```
+
+### findSTM / findLastSTM
+
+```scala
+def findSTM[E](p: A => STM[E, Boolean]): STM[E, Option[A]]
+def findLastSTM[E](p: A => STM[E, Boolean]): STM[E, Option[A]]
+```
+
+Finds elements using a transactional predicate.
+
+```scala
+val tx: STM[Nothing, Option[Int]] = for {
+  arr    <- TArray.make(1, 2, 3, 4, 5)
+  ref    <- TRef.make(3)
+  result <- arr.findSTM(n => ref.get.map(_ == n))
+} yield result
+```
+
+### indexOf / lastIndexOf
+
+```scala
+def indexOf(a: A): USTM[Int]
+def indexOf(a: A, from: Int): USTM[Int]
+def lastIndexOf(a: A): USTM[Int]
+def lastIndexOf(a: A, end: Int): USTM[Int]
+```
+
+Finds the index of a specific value. Returns -1 if not found.
+
+```scala
+val tx: USTM[Int] = for {
+  arr <- TArray.make(10, 20, 30, 20, 40)
+  idx <- arr.indexOf(20) // Returns 1
+  lst <- arr.lastIndexOf(20) // Returns 3
+} yield idx
+```
+
+### indexWhere
+
+```scala
+def indexWhere(p: A => Boolean): USTM[Int]
+def indexWhere(p: A => Boolean, from: Int): USTM[Int]
+```
+
+Finds the index of the first element matching a predicate.
+
+```scala
+val tx: USTM[Int] = for {
+  arr <- TArray.make(1, 3, 5, 7, 9)
+  idx <- arr.indexWhere(_ > 5) // Returns 3
+} yield idx
+```
+
+### indexWhereSTM
+
+```scala
+def indexWhereSTM[E](p: A => STM[E, Boolean]): STM[E, Int]
+def indexWhereSTM[E](p: A => STM[E, Boolean], from: Int): STM[E, Int]
+```
+
+Finds the index using a transactional predicate.
+
+```scala
+val tx: USTM[Int] = for {
+  arr <- TArray.make(1, 2, 3, 4, 5)
+  ref <- TRef.make(3)
+  idx <- arr.indexWhereSTM(n => ref.get.map(n > _))
+} yield idx
+```
+
+## Collection Operations
+
+### collectFirst / collectFirstSTM
+
+```scala
+def collectFirst[B](pf: PartialFunction[A, B]): USTM[Option[B]]
+def collectFirstSTM[E, B](pf: PartialFunction[A, STM[E, B]]): STM[E, Option[B]]
+```
+
+Finds and transforms the first matching element.
+
+```scala
+val tx: USTM[Option[String]] = for {
+  arr    <- TArray.make(1, 2, 3, 4, 5)
+  result <- arr.collectFirst {
+             case n if n > 3 => s"Found: $n"
+           }
+} yield result // Some("Found: 4")
+```
+
+### contains
+
+```scala
+def contains(a: A): USTM[Boolean]
+```
+
+Checks if the array contains a specific value.
+
+```scala
+val tx: USTM[Boolean] = for {
+  arr      <- TArray.make(1, 2, 3, 4, 5)
+  contains <- arr.contains(3)
+} yield contains // true
+```
+
+### exists / forall
+
+```scala
+def exists(p: A => Boolean): USTM[Boolean]
+def forall(p: A => Boolean): USTM[Boolean]
+```
+
+Checks if any/all elements satisfy a predicate.
+
+```scala
+val tx: USTM[(Boolean, Boolean)] = for {
+  arr     <- TArray.make(2, 4, 6, 8)
+  anyEven <- arr.exists(_ % 2 == 0) // true
+  allEven <- arr.forall(_ % 2 == 0) // true
+} yield (anyEven, allEven)
+```
+
+### existsSTM / forallSTM
+
+```scala
+def existsSTM[E](p: A => STM[E, Boolean]): STM[E, Boolean]
+def forallSTM[E](p: A => STM[E, Boolean]): STM[E, Boolean]
+```
+
+Checks elements using a transactional predicate.
+
+```scala
+val tx: USTM[Boolean] = for {
+  arr <- TArray.make(1, 2, 3, 4, 5)
+  ref <- TRef.make(3)
+  any <- arr.existsSTM(n => ref.get.map(n > _))
+} yield any
+```
+
+## Counting and Aggregation
+
+### count / countSTM
+
+```scala
+def count(p: A => Boolean): USTM[Int]
+def countSTM[E](p: A => STM[E, Boolean]): STM[E, Int]
+```
+
+Counts elements matching a predicate.
+
+```scala
+val tx: USTM[Int] = for {
+  arr   <- TArray.make(1, 2, 3, 4, 5, 6)
+  count <- arr.count(_ % 2 == 0) // Counts even numbers
+} yield count // Returns 3
+```
+
+### fold / foldSTM
+
+```scala
+def fold[Z](zero: Z)(op: (Z, A) => Z): USTM[Z]
+def foldSTM[E, Z](zero: Z)(op: (Z, A) => STM[E, Z]): STM[E, Z]
+```
+
+Folds the array elements.
+
+```scala
+val tx: USTM[Int] = for {
+  arr <- TArray.make(1, 2, 3, 4, 5)
+  sum <- arr.fold(0)(_ + _)
+} yield sum // Returns 15
+```
+
+### maxOption / minOption
+
+```scala
+def maxOption(implicit ord: Ordering[A]): USTM[Option[A]]
+def minOption(implicit ord: Ordering[A]): USTM[Option[A]]
+```
+
+Finds the maximum or minimum element.
+
+```scala
+val tx: USTM[(Option[Int], Option[Int])] = for {
+  arr <- TArray.make(5, 2, 8, 1, 9)
+  max <- arr.maxOption
+  min <- arr.minOption
+} yield (max, min) // (Some(9), Some(1))
+```
+
+### reduceOption / reduceOptionSTM
+
+```scala
+def reduceOption(op: (A, A) => A): USTM[Option[A]]
+def reduceOptionSTM[E](op: (A, A) => STM[E, A]): STM[E, Option[A]]
+```
+
+Reduces the array using a binary operator.
+
+```scala
+val tx: USTM[Option[Int]] = for {
+  arr    <- TArray.make(1, 2, 3, 4, 5)
+  result <- arr.reduceOption(_ + _)
+} yield result // Some(15)
+```
+
+## Transformation
+
+### transform / transformSTM
+
+```scala
+def transform(f: A => A): USTM[Unit]
+def transformSTM[E](f: A => STM[E, A]): STM[E, Unit]
+```
+
+Atomically updates all elements.
+
+```scala
+val tx: USTM[Unit] = for {
+  arr <- TArray.make(1, 2, 3, 4, 5)
+  _   <- arr.transform(_ * 2) // Doubles all elements
+} yield ()
+```
+
+### foreach
+
+```scala
+def foreach[E](f: A => STM[E, Unit]): STM[E, Unit]
+```
+
+Performs a transactional effect for each element.
+
+```scala
+val tx: USTM[Unit] = for {
+  arr <- TArray.make(1, 2, 3, 4, 5)
+  log <- TRef.make(List.empty[Int])
+  _   <- arr.foreach(n => log.update(n :: _))
+} yield ()
+```
+
+## Conversion
+
+### toList / toChunk
+
+```scala
+def toList: USTM[List[A]]
+def toChunk: USTM[Chunk[A]]
+```
+
+Converts the array to a list or chunk.
+
+```scala
+val tx: USTM[List[Int]] = for {
+  arr  <- TArray.make(1, 2, 3, 4, 5)
+  list <- arr.toList
+} yield list
+```
+
+## Example: Parallel Updates
+
+```scala
+import zio._
+import zio.stm._
+
+// Multiple fibers updating array concurrently
+val program = for {
+  arr <- TArray.make(0, 0, 0, 0, 0).commit
+  
+  // Launch 5 fibers, each incrementing one element
+  fibers <- ZIO.foreach(0 until 5) { i =>
+              arr.update(i, _ + 1).commit.repeatN(99).fork
+            }
+  
+  _      <- ZIO.collectAll(fibers.map(_.join))
+  result <- arr.toList.commit
+  _      <- Console.printLine(s"Final values: $result")
+} yield ()
+// Output: Final values: List(100, 100, 100, 100, 100)
+```
+
+## Example: Atomic Swap
+
+```scala
+import zio._
+import zio.stm._
+
+// Atomically swap two elements
+def swap[A](arr: TArray[A], i: Int, j: Int): USTM[Unit] =
+  for {
+    vi <- arr(i)
+    vj <- arr(j)
+    _  <- arr.update(i, _ => vj)
+    _  <- arr.update(j, _ => vi)
+  } yield ()
+
+val program = for {
+  arr <- TArray.make(1, 2, 3, 4, 5).commit
+  _   <- swap(arr, 0, 4).commit // Swap first and last
+  result <- arr.toList.commit
+  _   <- Console.printLine(s"After swap: $result")
+} yield ()
+// Output: After swap: List(5, 2, 3, 4, 1)
+```
+
+## Example: Bounded Buffer
+
+```scala
+import zio._
+import zio.stm._
+
+class BoundedBuffer[A](private val array: TArray[Option[A]], private val size: TRef[Int]) {
+  
+  def put(a: A): USTM[Unit] = for {
+    s <- size.get
+    _ <- STM.check(s < array.size)
+    _ <- array.update(s, _ => Some(a))
+    _ <- size.update(_ + 1)
+  } yield ()
+  
+  def take: USTM[A] = for {
+    s <- size.get
+    _ <- STM.check(s > 0)
+    _ <- size.update(_ - 1)
+    v <- array(s - 1)
+    _ <- array.update(s - 1, _ => None)
+  } yield v.get
+  
+  def getSize: USTM[Int] = size.get
+}
+
+object BoundedBuffer {
+  def make[A](capacity: Int): USTM[BoundedBuffer[A]] = for {
+    arr  <- TArray.make(Vector.fill(capacity)(None): _*)
+    size <- TRef.make(0)
+  } yield new BoundedBuffer(arr, size)
+}
+```
+
+## Best Practices
+
+1. **Batch updates**: Use `transform` to update all elements atomically
+2. **Avoid partial updates**: Complete all related updates in one transaction
+3. **Use appropriate size**: Large arrays may increase transaction conflicts
+4. **Prefer immutable elements**: Store immutable values for thread safety
+5. **Combine with other STM types**: TArray composes well with TRef, TMap, etc.
+
+## See Also
+
+- [TRef](/api/tref) - Transactional references
+- [ZSTM](/api/zstm) - Core STM effect type
+- [TMap](/api/tmap) - Transactional maps
+- [TQueue](/api/tqueue) - Transactional queues

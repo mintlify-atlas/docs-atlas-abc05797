@@ -1,0 +1,534 @@
+---
+title: 'ReentrantLock'
+description: 'Reentrant mutual exclusion lock for fiber coordination'
+icon: 'lock'
+---
+
+## Overview
+
+`ReentrantLock` is a mutual exclusion lock with the same basic behavior as implicit monitors but with extended capabilities. A fiber can re-acquire a lock it already holds, with the hold count incremented each time.
+
+## Key Characteristics
+
+- **Reentrant**: A fiber can acquire the same lock multiple times
+- **Fair/Unfair modes**: Optional fairness policy for waiting fibers
+- **Hold count tracking**: Tracks how many times a fiber has acquired the lock
+- **Ownership**: Only the owning fiber can release the lock
+
+## Creating a ReentrantLock
+
+### make
+
+Creates a new `ReentrantLock` with the specified fairness policy.
+
+```scala
+def make(fairness: Boolean = false): UIO[ReentrantLock]
+```
+
+**Parameters:**
+- `fairness` - If `true`, lock uses a fair ordering policy; if `false` (default), ordering is unspecified
+
+**Example:**
+
+```scala
+import zio._
+import zio.concurrent._
+
+// Unfair lock (default)
+val program1 = for {
+  lock <- ReentrantLock.make()
+  _    <- lock.lock
+} yield ()
+
+// Fair lock
+val program2 = for {
+  lock <- ReentrantLock.make(fairness = true)
+  _    <- lock.lock
+} yield ()
+```
+
+## Core Operations
+
+### lock
+
+Acquires the lock. If the lock is held by another fiber, the current fiber is suspended until the lock is acquired.
+
+```scala
+val lock: UIO[Unit]
+```
+
+**Behavior:**
+- If not held: Acquires immediately, sets hold count to 1
+- If held by current fiber: Increments hold count
+- If held by another fiber: Suspends until lock is available
+
+**Example:**
+
+```scala
+for {
+  lock <- ReentrantLock.make()
+  _    <- lock.lock
+  // Critical section
+  _    <- performCriticalOperation()
+  _    <- lock.unlock
+} yield ()
+```
+
+### unlock
+
+Attempts to release this lock.
+
+```scala
+val unlock: UIO[Unit]
+```
+
+**Behavior:**
+- Decrements the hold count
+- If hold count reaches zero, releases the lock
+- If current fiber is not the holder, does nothing
+- Wakes up the next waiting fiber (if fair: longest waiting; if unfair: random)
+
+**Example:**
+
+```scala
+for {
+  lock <- ReentrantLock.make()
+  _    <- lock.lock
+  _    <- lock.lock  // Reentrant: hold count = 2
+  _    <- lock.unlock // hold count = 1
+  _    <- lock.unlock // hold count = 0, lock released
+} yield ()
+```
+
+### tryLock
+
+Acquires the lock only if it is not held by another fiber at the time of invocation.
+
+```scala
+val tryLock: UIO[Boolean]
+```
+
+**Return Value:**
+- `true` if the lock was acquired
+- `false` if the lock was held by another fiber
+
+**Example:**
+
+```scala
+for {
+  lock     <- ReentrantLock.make()
+  acquired <- lock.tryLock
+  _        <- if (acquired) {
+    performOperation() *> lock.unlock
+  } else {
+    Console.printLine("Lock not available")
+  }
+} yield ()
+```
+
+### withLock
+
+Acquires and releases the lock as a managed resource effect.
+
+```scala
+val withLock: URIO[Scope, Int]
+```
+
+**Return Value:**
+- Returns the hold count after acquiring
+
+**Example:**
+
+```scala
+for {
+  lock <- ReentrantLock.make()
+  result <- ZIO.scoped {
+    lock.withLock *> performCriticalOperation()
+  }
+} yield result
+```
+
+## Query Operations
+
+### holdCount
+
+Queries the number of holds on this lock by the current fiber.
+
+```scala
+val holdCount: UIO[Int]
+```
+
+**Example:**
+
+```scala
+for {
+  lock  <- ReentrantLock.make()
+  _     <- lock.lock
+  _     <- lock.lock
+  count <- lock.holdCount
+} yield count // 2
+```
+
+### isHeldByCurrentFiber
+
+Queries if this lock is held by the current fiber.
+
+```scala
+val isHeldByCurrentFiber: UIO[Boolean]
+```
+
+**Example:**
+
+```scala
+for {
+  lock <- ReentrantLock.make()
+  held1 <- lock.isHeldByCurrentFiber
+  _     <- lock.lock
+  held2 <- lock.isHeldByCurrentFiber
+} yield (held1, held2) // (false, true)
+```
+
+### locked
+
+Queries if this lock is held by any fiber.
+
+```scala
+val locked: UIO[Boolean]
+```
+
+**Example:**
+
+```scala
+for {
+  lock   <- ReentrantLock.make()
+  locked1 <- lock.locked
+  fiber   <- lock.lock.fork
+  _       <- fiber.join
+  locked2 <- lock.locked
+} yield (locked1, locked2) // (false, true)
+```
+
+### owner
+
+Returns the fiber ID of the fiber that currently owns this lock, if owned.
+
+```scala
+val owner: UIO[Option[FiberId]]
+```
+
+**Example:**
+
+```scala
+for {
+  lock  <- ReentrantLock.make()
+  _     <- lock.lock
+  owner <- lock.owner
+  fid   <- ZIO.fiberId
+} yield owner.contains(fid) // true
+```
+
+### isFair
+
+Returns true if this lock has fairness set to true.
+
+```scala
+def isFair: Boolean
+```
+
+**Example:**
+
+```scala
+for {
+  lock <- ReentrantLock.make(fairness = true)
+  fair = lock.isFair
+} yield fair // true
+```
+
+## Queue Inspection
+
+### hasQueuedFibers
+
+Queries whether any fibers are waiting to acquire this lock.
+
+```scala
+val hasQueuedFibers: UIO[Boolean]
+```
+
+### hasQueuedFiber
+
+Queries whether the given fiber is waiting to acquire this lock.
+
+```scala
+def hasQueuedFiber(fiberId: FiberId): UIO[Boolean]
+```
+
+### queueLength
+
+Returns the number of fibers waiting to acquire this lock.
+
+```scala
+val queueLength: UIO[Int]
+```
+
+### queuedFibers
+
+Returns the fiber IDs of fibers waiting to acquire this lock.
+
+```scala
+val queuedFibers: UIO[List[FiberId]]
+```
+
+**Example:**
+
+```scala
+for {
+  lock    <- ReentrantLock.make()
+  _       <- lock.lock
+  fiber1  <- lock.lock.fork
+  fiber2  <- lock.lock.fork
+  length  <- lock.queueLength
+  waiting <- lock.queuedFibers
+} yield length // 2
+```
+
+## Common Patterns
+
+### Critical Section
+
+Protect a critical section with automatic lock management.
+
+```scala
+for {
+  lock <- ReentrantLock.make()
+  result <- ZIO.scoped {
+    lock.withLock *> {
+      // Critical section
+      for {
+        _ <- updateSharedState()
+        result <- computeResult()
+      } yield result
+    }
+  }
+} yield result
+```
+
+### Reentrant Calls
+
+Safely make reentrant calls that acquire the same lock.
+
+```scala
+def outerOperation(lock: ReentrantLock): UIO[Unit] = 
+  ZIO.scoped {
+    lock.withLock *> {
+      Console.printLine("Outer") *>
+      innerOperation(lock)
+    }
+  }
+
+def innerOperation(lock: ReentrantLock): UIO[Unit] =
+  ZIO.scoped {
+    lock.withLock *> {
+      Console.printLine("Inner")
+    }
+  }
+```
+
+### Conditional Locking
+
+Use `tryLock` for non-blocking attempts.
+
+```scala
+for {
+  lock <- ReentrantLock.make()
+  result <- lock.tryLock.flatMap {
+    case true => 
+      performFastOperation() <* lock.unlock
+    case false =>
+      performAlternativeOperation()
+  }
+} yield result
+```
+
+### Read-Write Lock Pattern
+
+Implement a simple read-write lock using two `ReentrantLock`s.
+
+```scala
+class ReadWriteLock(
+  readLock: ReentrantLock,
+  writeLock: ReentrantLock,
+  readers: Ref[Int]
+) {
+  def read[R, E, A](effect: ZIO[R, E, A]): ZIO[R, E, A] =
+    ZIO.scoped {
+      for {
+        _ <- readLock.withLock
+        _ <- readers.update(_ + 1)
+        count <- readers.get
+        _ <- ZIO.when(count == 1)(writeLock.lock)
+        _ <- readLock.unlock
+        
+        result <- effect
+        
+        _ <- readLock.lock
+        _ <- readers.update(_ - 1)
+        count <- readers.get
+        _ <- ZIO.when(count == 0)(writeLock.unlock)
+      } yield result
+    }
+  
+  def write[R, E, A](effect: ZIO[R, E, A]): ZIO[R, E, A] =
+    ZIO.scoped {
+      writeLock.withLock *> effect
+    }
+}
+```
+
+## Use Cases
+
+### Resource Pool Management
+
+```scala
+class ResourcePool[A](resources: List[A]) {
+  private val lock = ReentrantLock.make()
+  private val available = Ref.make(resources)
+  
+  def acquire: Task[A] = 
+    ZIO.scoped {
+      lock.flatMap(_.withLock) *>
+      available.flatMap { ref =>
+        ref.modify {
+          case Nil => (ZIO.fail(new Exception("No resources")), Nil)
+          case h :: t => (ZIO.succeed(h), t)
+        }.flatten
+      }
+    }
+  
+  def release(resource: A): Task[Unit] =
+    ZIO.scoped {
+      lock.flatMap(_.withLock) *>
+      available.flatMap(_.update(resource :: _))
+    }
+}
+```
+
+### Lazy Initialization
+
+```scala
+class LazyValue[A](compute: UIO[A]) {
+  private val lock = ReentrantLock.make()
+  private val value = Ref.make[Option[A]](None)
+  
+  def get: UIO[A] = 
+    value.flatMap(_.get).flatMap {
+      case Some(v) => ZIO.succeed(v)
+      case None => ZIO.scoped {
+        lock.flatMap { l =>
+          l.withLock *>
+          value.flatMap(_.get).flatMap {
+            case Some(v) => ZIO.succeed(v)
+            case None => 
+              for {
+                v <- compute
+                _ <- value.flatMap(_.set(Some(v)))
+              } yield v
+          }
+        }
+      }
+    }
+}
+```
+
+### Synchronized Counter
+
+```scala
+class SynchronizedCounter {
+  private val lock = ReentrantLock.make()
+  private val count = Ref.make(0)
+  
+  def increment: UIO[Int] = ZIO.scoped {
+    lock.flatMap(_.withLock) *>
+    count.flatMap(_.updateAndGet(_ + 1))
+  }
+  
+  def decrement: UIO[Int] = ZIO.scoped {
+    lock.flatMap(_.withLock) *>
+    count.flatMap(_.updateAndGet(_ - 1))
+  }
+  
+  def get: UIO[Int] = ZIO.scoped {
+    lock.flatMap(_.withLock) *>
+    count.flatMap(_.get)
+  }
+}
+```
+
+## Fairness Policy
+
+### Unfair Lock (Default)
+
+- **Advantage**: Higher throughput
+- **Disadvantage**: Some fibers may wait longer
+- **Use when**: Performance is more important than strict ordering
+
+```scala
+val unfairLock = ReentrantLock.make(fairness = false)
+```
+
+### Fair Lock
+
+- **Advantage**: FIFO ordering, no starvation
+- **Disadvantage**: Lower throughput
+- **Use when**: Fairness is required (e.g., request processing)
+
+```scala
+val fairLock = ReentrantLock.make(fairness = true)
+```
+
+## Best Practices
+
+<AccordionGroup>
+  <Accordion title="Always use withLock">
+    Prefer `withLock` over manual `lock`/`unlock` to ensure the lock is always released, even on interruption or failure.
+  </Accordion>
+  
+  <Accordion title="Keep critical sections short">
+    Minimize the amount of work done while holding the lock to reduce contention.
+  </Accordion>
+  
+  <Accordion title="Match lock/unlock calls">
+    If using manual locking, ensure every `lock` has a corresponding `unlock`, accounting for the hold count in reentrant calls.
+  </Accordion>
+  
+  <Accordion title="Consider alternatives">
+    For simple atomic operations, consider using `Ref` instead. For more complex coordination, consider `Semaphore` or STM primitives.
+  </Accordion>
+  
+  <Accordion title="Use fairness judiciously">
+    Fair locks have lower throughput. Use them only when FIFO ordering is required.
+  </Accordion>
+</AccordionGroup>
+
+## Comparison with Other Primitives
+
+| Primitive | Purpose | Reentrant | Fairness Option | Concurrent Access |
+|-----------|---------|-----------|-----------------|-------------------|
+| **ReentrantLock** | Mutual exclusion | Yes | Yes | No (exclusive) |
+| [Semaphore](/api/semaphore) | Limited concurrency | No | No | Yes (permits) |
+| [Ref](/api/ref) | Atomic updates | N/A | N/A | Yes (lock-free) |
+| [TRef](/api/tref) | Transactional updates | N/A | N/A | Yes (STM) |
+
+## Implementation Details
+
+`ReentrantLock` is implemented using:
+- `Ref[State]` containing epoch, holder, hold count, and waiters
+- `Promise[Nothing, Unit]` for each waiting fiber
+- Fair mode uses FIFO ordering based on arrival epoch
+- Unfair mode uses random selection for better performance
+
+## See Also
+
+- [Semaphore](/api/semaphore) - Permit-based concurrency control
+- [Ref](/api/ref) - Lock-free atomic reference
+- [TRef](/api/tref) - Transactional reference
+- [CyclicBarrier](/api/cyclic-barrier) - Multi-party synchronization

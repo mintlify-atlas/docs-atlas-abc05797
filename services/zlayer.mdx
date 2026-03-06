@@ -1,0 +1,346 @@
+---
+title: 'ZLayer'
+description: 'Build and compose service layers for dependency injection'
+icon: 'layer-group'
+---
+
+# ZLayer
+
+A `ZLayer[-RIn, +E, +ROut]` describes how to build one or more services in your application. Services can be injected into effects via `ZIO#provide`. Effects can require services via `ZIO.service`.
+
+Layers can be thought of as recipes for producing bundles of services, given their dependencies (other services).
+
+## Key Concepts
+
+<CardGroup cols={2}>
+  <Card title="Type-Safe DI" icon="shield-check">
+    Dependencies are tracked in types - the compiler ensures all requirements are met
+  </Card>
+  <Card title="Resource Management" icon="recycle">
+    Automatic acquisition and release of resources with `Scope`
+  </Card>
+  <Card title="Shared by Default" icon="share-nodes">
+    Layers are memoized - the same layer used twice is only allocated once
+  </Card>
+  <Card title="Composable" icon="puzzle-piece">
+    Combine layers horizontally and vertically using operators
+  </Card>
+</CardGroup>
+
+## Creating Layers
+
+### From Pure Values
+
+Use `ZLayer.succeed` to create a layer from a pure value:
+
+```scala
+import zio._
+
+trait Database
+class DatabaseLive extends Database
+
+val databaseLayer: ULayer[Database] = 
+  ZLayer.succeed(new DatabaseLive)
+```
+
+### From Effects
+
+Use `ZLayer.fromZIO` (or just `ZLayer.apply`) to create a layer from an effect:
+
+```scala
+trait Config
+case class AppConfig(port: Int, host: String) extends Config
+
+val configLayer: Layer[Throwable, Config] = 
+  ZLayer.fromZIO(
+    ZIO.attempt(AppConfig(8080, "localhost"))
+  )
+```
+
+### From Functions
+
+Create layers from constructor functions using `ZLayer.fromFunction`:
+
+```scala
+trait UserService
+class UserServiceLive(database: Database) extends UserService
+
+val userServiceLayer: URLayer[Database, UserService] = 
+  ZLayer.fromFunction(UserServiceLive(_))
+```
+
+### With Resource Management
+
+For services that need cleanup, use `ZLayer.scoped`:
+
+```scala
+trait ConnectionPool {
+  def shutdown: UIO[Unit]
+}
+
+val poolLayer: ZLayer[Any, Throwable, ConnectionPool] = 
+  ZLayer.scoped {
+    ZIO.acquireRelease(
+      acquire = ZIO.attempt(new ConnectionPool { 
+        def shutdown = ZIO.succeed(println("Pool closed")) 
+      })
+    )(
+      release = pool => pool.shutdown
+    )
+  }
+```
+
+## Composing Layers
+
+### Horizontal Composition
+
+Combine independent layers with `++` or `<*>`:
+
+```scala
+val servicesLayer = 
+  databaseLayer ++ configLayer
+// ZLayer[Any, Nothing, Database with Config]
+```
+
+### Vertical Composition
+
+Feed the output of one layer into another with `>>>` or `to`:
+
+```scala
+val fullStack = 
+  databaseLayer >>> userServiceLayer
+// ZLayer[Any, Nothing, UserService]
+```
+
+### Combining Both
+
+Use `>+>` (or `andTo`) to combine output with passthrough:
+
+```scala
+val withDatabase = 
+  databaseLayer >+> userServiceLayer
+// ZLayer[Any, Nothing, Database with UserService]
+```
+
+## Layer Operators
+
+<AccordionGroup>
+  <Accordion title="++, <*> - Horizontal composition">
+    Combines layers in parallel, producing both outputs:
+    ```scala
+    layerA ++ layerB
+    // ZLayer[RIn1 with RIn2, E, ROut1 with ROut2]
+    ```
+  </Accordion>
+  
+  <Accordion title=">>>, to - Vertical composition">
+    Feeds output of first layer into the second:
+    ```scala
+    layerA >>> layerB
+    // ZLayer[RIn1, E, ROut2]
+    ```
+  </Accordion>
+  
+  <Accordion title=">+>, andTo - Vertical with passthrough">
+    Composes vertically but keeps first layer's output:
+    ```scala
+    layerA >+> layerB
+    // ZLayer[RIn, E, ROut1 with ROut2]
+    ```
+  </Accordion>
+  
+  <Accordion title="<>, orElse - Fallback">
+    Try first layer, fall back to second on failure:
+    ```scala
+    primaryLayer <> fallbackLayer
+    ```
+  </Accordion>
+  
+  <Accordion title="fresh - Disable sharing">
+    Create a fresh instance each time:
+    ```scala
+    layer.fresh
+    ```
+  </Accordion>
+  
+  <Accordion title="map - Transform output">
+    Transform the layer's output environment:
+    ```scala
+    layer.map(env => env.update[A](transform))
+    ```
+  </Accordion>
+  
+  <Accordion title="catchAll - Handle errors">
+    Recover from layer construction failures:
+    ```scala
+    layer.catchAll(e => fallbackLayer)
+    ```
+  </Accordion>
+</AccordionGroup>
+
+## Providing Layers
+
+### Manual Composition
+
+```scala
+val program: ZIO[Database with UserService, Throwable, Unit] = 
+  for {
+    service <- ZIO.service[UserService]
+    _       <- service.createUser("Alice")
+  } yield ()
+
+val runnable = program.provide(
+  databaseLayer,
+  userServiceLayer
+)
+```
+
+### Automatic Wiring
+
+Let ZIO automatically wire dependencies:
+
+```scala
+val runnable = program.provideSome[Config](
+  databaseLayer,
+  userServiceLayer
+)
+```
+
+<Warning>
+The `provide` macro will report compilation errors if:
+- Required dependencies are missing
+- There are circular dependencies
+- Types don't align correctly
+</Warning>
+
+## Debug Visualization
+
+Visualize your layer dependency graph:
+
+```scala
+val app = program.provide(
+  databaseLayer,
+  userServiceLayer,
+  ZLayer.Debug.tree  // Shows ASCII tree of dependencies
+)
+```
+
+This produces a compilation error showing:
+
+```
+◉ UserService.live
+╰─◑ Database.live
+```
+
+## Best Practices
+
+<AccordionGroup>
+  <Accordion title="Define layers in companion objects">
+    ```scala
+    trait UserService { /* ... */ }
+    
+    object UserService {
+      val live: URLayer[Database, UserService] = 
+        ZLayer.fromFunction(UserServiceLive(_))
+    }
+    ```
+  </Accordion>
+  
+  <Accordion title="Use meaningful layer names">
+    Name layers descriptively: `live`, `test`, `mock`, `inMemory`
+  </Accordion>
+  
+  <Accordion title="Keep layers focused">
+    Each layer should construct a single service or small cohesive group
+  </Accordion>
+  
+  <Accordion title="Leverage automatic wiring">
+    Use `provide` and let the compiler handle dependency resolution
+  </Accordion>
+  
+  <Accordion title="Test with mock layers">
+    Create test implementations as alternative layers:
+    ```scala
+    object UserService {
+      val live: URLayer[Database, UserService] = /* ... */
+      val test: ULayer[UserService] = /* ... */
+    }
+    ```
+  </Accordion>
+</AccordionGroup>
+
+## Common Patterns
+
+### Configuration + Implementation
+
+```scala
+case class DbConfig(url: String, poolSize: Int)
+
+trait Database
+class DatabaseLive(config: DbConfig) extends Database
+
+object Database {
+  val live: URLayer[DbConfig, Database] = 
+    ZLayer.fromFunction(DatabaseLive(_))
+}
+
+val configLayer: ULayer[DbConfig] = 
+  ZLayer.succeed(DbConfig("jdbc:...", 10))
+
+val databaseLayer: ULayer[Database] = 
+  configLayer >>> Database.live
+```
+
+### Layer with Initialization
+
+```scala
+val cacheLayer: ZLayer[Any, Throwable, Cache] = 
+  ZLayer.scoped {
+    for {
+      cache <- ZIO.attempt(new Cache)
+      _     <- cache.warmUp.forkScoped  // Background task
+    } yield cache
+  }
+```
+
+## Related Types
+
+- **ULayer[A]** - `ZLayer[Any, Nothing, A]` - No requirements, cannot fail
+- **Layer[E, A]** - `ZLayer[Any, E, A]` - No requirements, can fail with E
+- **URLayer[R, A]** - `ZLayer[R, Nothing, A]` - Requires R, cannot fail
+- **RLayer[R, A]** - `ZLayer[R, Throwable, A]` - Requires R, can fail with Throwable
+
+## API Reference
+
+<CardGroup cols={2}>
+  <Card title="Construction" icon="hammer">
+    - `ZLayer.succeed[A](a: A): ULayer[A]`
+    - `ZLayer.fromZIO[R, E, A](zio: ZIO[R, E, A]): ZLayer[R, E, A]`
+    - `ZLayer.fromFunction[A => B]: URLayer[A, B]`
+    - `ZLayer.scoped[R, E, A]: ZLayer[R with Scope, E, A]`
+  </Card>
+  <Card title="Composition" icon="plus">
+    - `++` / `<*>` - Horizontal composition
+    - `>>>` / `to` - Vertical composition
+    - `>+>` / `andTo` - Vertical with passthrough
+    - `<>` / `orElse` - Fallback composition
+  </Card>
+  <Card title="Transformation" icon="wand-magic-sparkles">
+    - `map` - Transform output
+    - `flatMap` - Dynamic layer construction
+    - `project` - Extract part of output
+    - `update` - Update specific service
+  </Card>
+  <Card title="Error Handling" icon="triangle-exclamation">
+    - `catchAll` - Recover from errors
+    - `catchAllCause` - Recover with full cause
+    - `orDie` - Convert errors to defects
+    - `retry` - Retry with schedule
+  </Card>
+</CardGroup>
+
+## See Also
+
+- [ZEnvironment](/services/zenvironment) - The underlying service container
+- [Service Pattern](/services/service-pattern) - Idiomatic service definition patterns
+- [ZIO Effect](/core/zio-effect) - The core effect type

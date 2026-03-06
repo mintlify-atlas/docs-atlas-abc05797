@@ -1,0 +1,236 @@
+---
+title: FiberRef[A]
+description: API reference for ZIO's FiberRef fiber-local state
+---
+
+## Overview
+
+A `FiberRef[A]` is ZIO's equivalent of Java's `ThreadLocal`. The value of a `FiberRef` is automatically propagated to child fibers when they are forked and merged back into the value of the parent fiber after they are joined.
+
+By default the value of the child fiber will replace the value of the parent fiber on join, but you can specify your own logic for how values should be merged.
+
+## Type Signature
+
+```scala
+sealed trait FiberRef[A] extends Serializable
+```
+
+<ParamField path="A" type="type">
+  The type of the value
+</ParamField>
+
+## Constructors
+
+### make
+
+Creates a new `FiberRef` with the specified initial value.
+
+```scala
+def make[A](
+  initial: => A,
+  fork: A => A = ZIO.identityFn[A],
+  join: (A, A) => A = ZIO.secondFn[A]
+)(implicit trace: Trace): ZIO[Scope, Nothing, FiberRef[A]]
+```
+
+<ParamField path="initial" type="A">
+  The initial value of the FiberRef
+</ParamField>
+
+<ParamField path="fork" type="A => A">
+  Function to compute child value when a fiber is forked (default: identity)
+</ParamField>
+
+<ParamField path="join" type="(A, A) => A">
+  Function to combine child and parent values when fibers are joined (default: takes child value)
+</ParamField>
+
+### makePatch
+
+Creates a new `FiberRef` with the specified patch type for compositional updates.
+
+```scala
+def makePatch[Value, Patch](
+  initial: Value,
+  differ: Differ[Value, Patch]
+)(implicit trace: Trace): ZIO[Scope, Nothing, FiberRef.WithPatch[Value, Patch]]
+```
+
+<ParamField path="initial" type="Value">
+  The initial value
+</ParamField>
+
+<ParamField path="differ" type="Differ[Value, Patch]">
+  The differ that defines how to combine patches
+</ParamField>
+
+## Key Methods
+
+### get
+
+Reads the value associated with the current fiber.
+
+```scala
+def get(implicit trace: Trace): UIO[A]
+```
+
+**Returns:** The current value
+
+### set
+
+Sets the value associated with the current fiber.
+
+```scala
+def set(value: A)(implicit trace: Trace): UIO[Unit]
+```
+
+<ParamField path="value" type="A">
+  The new value to set
+</ParamField>
+
+### update
+
+Atomically modifies the `FiberRef` with the specified function.
+
+```scala
+def update(f: A => A)(implicit trace: Trace): UIO[Unit]
+```
+
+<ParamField path="f" type="A => A">
+  The function to modify the value
+</ParamField>
+
+### modify
+
+Atomically modifies the `FiberRef` with the specified function, computing a return value.
+
+```scala
+def modify[B](f: A => (B, A))(implicit trace: Trace): UIO[B]
+```
+
+<ParamField path="f" type="A => (B, A)">
+  Function that computes both a return value and the new state
+</ParamField>
+
+### locally
+
+Runs the effect with the `FiberRef` set to the specified value, restoring the original value afterward.
+
+```scala
+def locally[R, E, B](newValue: A)(zio: ZIO[R, E, B])(implicit trace: Trace): ZIO[R, E, B]
+```
+
+<ParamField path="newValue" type="A">
+  The temporary value to use
+</ParamField>
+
+<ParamField path="zio" type="ZIO[R, E, B]">
+  The effect to run with the temporary value
+</ParamField>
+
+### locallyWith
+
+Runs the effect with the `FiberRef` modified by the specified function, restoring the original value afterward.
+
+```scala
+def locallyWith[R, E, B](f: A => A)(zio: ZIO[R, E, B])(implicit trace: Trace): ZIO[R, E, B]
+```
+
+### getAndSet
+
+Atomically sets the value and returns the old value.
+
+```scala
+final def getAndSet(newValue: A)(implicit trace: Trace): UIO[A]
+```
+
+### getAndUpdate
+
+Atomically modifies the `FiberRef` and returns the old value.
+
+```scala
+final def getAndUpdate(f: A => A)(implicit trace: Trace): UIO[A]
+```
+
+### updateAndGet
+
+Atomically modifies the `FiberRef` and returns the new value.
+
+```scala
+final def updateAndGet(f: A => A)(implicit trace: Trace): UIO[A]
+```
+
+## Examples
+
+### Basic Usage
+
+```scala
+import zio._
+
+val program = for {
+  ref    <- FiberRef.make("Hello world!")
+  _      <- ref.set("Hi!")
+  result <- ref.get
+} yield result
+// result: "Hi!"
+```
+
+### Parent-Child Propagation
+
+```scala
+val program = for {
+  ref    <- FiberRef.make("Hello world!")
+  child  <- ref.set("Hi!").fork
+  _      <- child.join
+  result <- ref.get
+} yield result
+// result: "Hi!" (child value propagated to parent)
+```
+
+### Custom Join Logic
+
+```scala
+val program = for {
+  ref   <- FiberRef.make(0, identity[Int], math.max)
+  child <- ref.update(_ + 1).fork
+  _     <- ref.update(_ + 2)
+  _     <- child.join
+  value <- ref.get
+} yield value
+// value: 2 (max of 1 and 2)
+```
+
+### Local Modifications
+
+```scala
+val program = for {
+  ref    <- FiberRef.make("default")
+  _      <- ref.set("outer")
+  inner  <- ref.locally("inner") {
+              ref.get
+            }
+  outer  <- ref.get
+} yield (inner, outer)
+// result: ("inner", "outer")
+```
+
+### Request Context Pattern
+
+```scala
+import zio._
+
+case class RequestContext(userId: String, traceId: String)
+
+val requestContext = FiberRef.make(RequestContext("", ""))
+
+def handleRequest(userId: String, traceId: String): Task[Unit] =
+  requestContext.flatMap { ref =>
+    ref.locally(RequestContext(userId, traceId)) {
+      // All code here has access to the request context
+      for {
+        ctx <- ref.get
+        _   <- ZIO.log(s"Processing request for ${ctx.userId}")
+      } yield ()
+    }
+  }
+```

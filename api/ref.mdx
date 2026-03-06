@@ -1,0 +1,306 @@
+---
+title: Ref[A]
+description: API reference for ZIO's Ref atomic reference
+---
+
+## Overview
+
+A `Ref[A]` is a purely functional description of a mutable reference. The fundamental operations of a `Ref` are `set` and `get`. By default, `Ref` is implemented using compare-and-swap operations for maximum performance and does not support effects within update operations.
+
+For effects within updates, use `Ref.Synchronized`, which guarantees proper synchronization at some cost to performance.
+
+## Type Signature
+
+```scala
+sealed abstract class Ref[A] extends Serializable
+```
+
+<ParamField path="A" type="type">
+  The type of the value
+</ParamField>
+
+## Constructors
+
+### make
+
+Creates a new `Ref` with the specified value.
+
+```scala
+def make[A](a: => A)(implicit trace: Trace): UIO[Ref[A]]
+```
+
+<ParamField path="a" type="A">
+  The initial value
+</ParamField>
+
+## Key Methods
+
+### get
+
+Reads the value from the `Ref`.
+
+```scala
+def get(implicit trace: Trace): UIO[A]
+```
+
+**Returns:** The current value
+
+### set
+
+Writes a new value to the `Ref` with immediate consistency.
+
+```scala
+def set(a: A)(implicit trace: Trace): UIO[Unit]
+```
+
+<ParamField path="a" type="A">
+  The new value to set
+</ParamField>
+
+### setAsync
+
+Writes a new value without guaranteeing immediate consistency.
+
+```scala
+def setAsync(a: A)(implicit trace: Trace): UIO[Unit]
+```
+
+<ParamField path="a" type="A">
+  The new value to set
+</ParamField>
+
+### update
+
+Atomically modifies the `Ref` with the specified function.
+
+```scala
+def update(f: A => A)(implicit trace: Trace): UIO[Unit]
+```
+
+<ParamField path="f" type="A => A">
+  The function to modify the value
+</ParamField>
+
+### modify
+
+Atomically modifies the `Ref`, computing a return value.
+
+```scala
+def modify[B](f: A => (B, A))(implicit trace: Trace): UIO[B]
+```
+
+<ParamField path="f" type="A => (B, A)">
+  Function that computes both a return value and the new state
+</ParamField>
+
+### getAndSet
+
+Atomically writes a value and returns the value immediately before modification.
+
+```scala
+def getAndSet(a: A)(implicit trace: Trace): UIO[A]
+```
+
+### getAndUpdate
+
+Atomically modifies the `Ref` and returns the value immediately before modification.
+
+```scala
+def getAndUpdate(f: A => A)(implicit trace: Trace): UIO[A]
+```
+
+### updateAndGet
+
+Atomically modifies the `Ref` and returns the updated value.
+
+```scala
+def updateAndGet(f: A => A)(implicit trace: Trace): UIO[A]
+```
+
+### updateSome
+
+Atomically modifies the `Ref` with a partial function.
+
+```scala
+def updateSome(pf: PartialFunction[A, A])(implicit trace: Trace): UIO[Unit]
+```
+
+<ParamField path="pf" type="PartialFunction[A, A]">
+  Partial function to apply if defined on current value
+</ParamField>
+
+### modifySome
+
+Atomically modifies with a partial function, computing a return value.
+
+```scala
+def modifySome[B](default: B)(pf: PartialFunction[A, (B, A)])(implicit trace: Trace): UIO[B]
+```
+
+## Numeric Operations
+
+For numeric types, `Ref` provides additional convenience methods:
+
+### getAndIncrement
+
+```scala
+def getAndIncrement(implicit num: math.Numeric[A], trace: Trace): UIO[A]
+```
+
+### getAndDecrement
+
+```scala
+def getAndDecrement(implicit num: math.Numeric[A], trace: Trace): UIO[A]
+```
+
+### getAndAdd
+
+```scala
+def getAndAdd(delta: A)(implicit num: math.Numeric[A], trace: Trace): UIO[A]
+```
+
+### incrementAndGet
+
+```scala
+def incrementAndGet(implicit num: math.Numeric[A], trace: Trace): UIO[A]
+```
+
+### decrementAndGet
+
+```scala
+def decrementAndGet(implicit num: math.Numeric[A], trace: Trace): UIO[A]
+```
+
+### addAndGet
+
+```scala
+def addAndGet(delta: A)(implicit num: math.Numeric[A], trace: Trace): UIO[A]
+```
+
+## Ref.Synchronized
+
+A specialized variant that supports effects within update operations:
+
+```scala
+Ref.Synchronized.make[A](a: => A)(implicit trace: Trace): UIO[Ref.Synchronized[A]]
+```
+
+### modifyZIO
+
+Atomically modifies with an effectful function.
+
+```scala
+def modifyZIO[R, E, B](f: A => ZIO[R, E, (B, A)])(implicit trace: Trace): ZIO[R, E, B]
+```
+
+### updateZIO
+
+Atomically modifies with an effect.
+
+```scala
+def updateZIO[R, E](f: A => ZIO[R, E, A])(implicit trace: Trace): ZIO[R, E, Unit]
+```
+
+## Examples
+
+### Basic Counter
+
+```scala
+import zio._
+
+val program = for {
+  ref    <- Ref.make(0)
+  _      <- ref.update(_ + 1)
+  _      <- ref.update(_ + 1)
+  result <- ref.get
+} yield result
+// result: 2
+```
+
+### Atomic Operations
+
+```scala
+val program = for {
+  ref      <- Ref.make(10)
+  oldValue <- ref.getAndUpdate(_ * 2)
+  newValue <- ref.get
+} yield (oldValue, newValue)
+// result: (10, 20)
+```
+
+### Concurrent Counter
+
+```scala
+val program = for {
+  ref    <- Ref.make(0)
+  fibers <- ZIO.foreach(1 to 100)(_ => ref.update(_ + 1).fork)
+  _      <- ZIO.foreach(fibers)(_.join)
+  result <- ref.get
+} yield result
+// result: 100
+```
+
+### Conditional Updates
+
+```scala
+val program = for {
+  ref <- Ref.make(5)
+  _   <- ref.updateSome {
+           case n if n < 10 => n * 2
+         }
+  result <- ref.get
+} yield result
+// result: 10
+```
+
+### Stateful Computation
+
+```scala
+val program = for {
+  ref    <- Ref.make(List.empty[String])
+  _      <- ref.update(_ :+ "A")
+  _      <- ref.update(_ :+ "B")
+  _      <- ref.update(_ :+ "C")
+  result <- ref.get
+} yield result
+// result: List("A", "B", "C")
+```
+
+### Swap Operation
+
+```scala
+val program = for {
+  ref1 <- Ref.make("A")
+  ref2 <- Ref.make("B")
+  a    <- ref1.get
+  b    <- ref2.get
+  _    <- ref1.set(b)
+  _    <- ref2.set(a)
+  newA <- ref1.get
+  newB <- ref2.get
+} yield (newA, newB)
+// result: ("B", "A")
+```
+
+### Numeric Counter
+
+```scala
+val program = for {
+  counter <- Ref.make(0)
+  old1    <- counter.getAndIncrement
+  old2    <- counter.getAndAdd(5)
+  current <- counter.get
+} yield (old1, old2, current)
+// result: (0, 1, 6)
+```
+
+### Synchronized Ref with Effects
+
+```scala
+val program = for {
+  ref    <- Ref.Synchronized.make(0)
+  _      <- ref.updateZIO(n => ZIO.sleep(100.millis).as(n + 1))
+  result <- ref.get
+} yield result
+// result: 1
+```

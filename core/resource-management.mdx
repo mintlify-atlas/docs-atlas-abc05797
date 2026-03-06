@@ -1,0 +1,511 @@
+---
+title: 'Resource Management'
+description: 'Safe and composable resource management with ZIO Scope'
+icon: 'box-archive'
+---
+
+# Resource Management
+
+ZIO provides safe, composable resource management through the `Scope` abstraction. Resources are acquired and released automatically, even in the presence of errors, interruptions, or concurrent execution.
+
+## The Problem
+
+Manual resource management is error-prone:
+
+```scala
+// Unsafe - resource may leak on error
+val file = openFile("data.txt")
+try {
+  processFile(file)
+} finally {
+  file.close()
+}
+```
+
+Problems with traditional approaches:
+
+- Resources leak if acquisition fails after partial allocation
+- Resources leak if interruption occurs during use
+- Hard to compose multiple resources
+- Difficult to manage resources across concurrent operations
+
+## Scope
+
+From the source code (`Scope.scala:24-30`):
+
+```scala
+/**
+ * A `Scope` is the foundation of safe, composable resource management in ZIO. A
+ * scope has two fundamental operators, `addFinalizer`, which adds a finalizer
+ * to the scope, and `close`, which closes a scope and runs all finalizers that
+ * have been added to the scope.
+ */
+sealed trait Scope
+```
+
+<CardGroup cols={2}>
+  <Card title="Acquisition" icon="download">
+    Resources are acquired at the beginning of a scope
+  </Card>
+  <Card title="Finalization" icon="broom">
+    Cleanup code is registered as finalizers
+  </Card>
+  <Card title="Automatic Release" icon="robot">
+    Resources are released when the scope closes
+  </Card>
+  <Card title="Guaranteed Cleanup" icon="shield-check">
+    Finalizers run even on failure or interruption
+  </Card>
+</CardGroup>
+
+## Creating Scoped Resources
+
+### acquireRelease
+
+The fundamental resource pattern (`ZIO.scala:2745-2748`):
+
+```scala
+import zio._
+
+def openFile(path: String): Task[File] = ???
+def closeFile(file: File): UIO[Unit] = ???
+
+val fileResource: ZIO[Scope, Throwable, File] = 
+  ZIO.acquireRelease(
+    acquire = openFile("data.txt")
+  )(
+    release = file => closeFile(file)
+  )
+```
+
+<Info>
+  The `acquire` and `release` effects are uninterruptible, ensuring resources are properly managed.
+</Info>
+
+### acquireReleaseWith
+
+Acquire, use, and release in one operation:
+
+```scala
+val result: Task[String] = 
+  ZIO.acquireReleaseWith(
+    acquire = openFile("data.txt")
+  )(
+    release = file => closeFile(file)
+  )(
+    use = file => readContents(file)
+  )
+```
+
+### acquireReleaseExit
+
+Access the exit value in the release:
+
+```scala
+val withExitInfo: ZIO[Scope, Throwable, Connection] = 
+  ZIO.acquireReleaseExit(
+    acquire = openConnection
+  )(
+    release = (conn, exit) =>
+      exit match {
+        case Exit.Success(_) => 
+          commitAndClose(conn)
+        case Exit.Failure(_) => 
+          rollbackAndClose(conn)
+      }
+  )
+```
+
+## Using Scoped Resources
+
+### ZIO.scoped
+
+Create a scope for resource usage:
+
+```scala
+val program: Task[String] = 
+  ZIO.scoped {
+    for {
+      file    <- acquireFile("data.txt")
+      content <- readFile(file)
+    } yield content
+  }  // File automatically closed here
+```
+
+### Multiple Resources
+
+Compose multiple scoped resources:
+
+```scala
+val multiResource: Task[Unit] = 
+  ZIO.scoped {
+    for {
+      db    <- acquireDatabase
+      cache <- acquireCache
+      api   <- acquireAPI
+      _     <- runApp(db, cache, api)
+    } yield ()
+  }  // All resources released in reverse order
+```
+
+<Tip>
+  Resources are released in reverse order of acquisition, ensuring proper cleanup dependencies.
+</Tip>
+
+## Scope Operations
+
+### Adding Finalizers
+
+Register cleanup code directly (`Scope.scala:32-36`):
+
+```scala
+val withFinalizer: ZIO[Scope, Nothing, Unit] = 
+  for {
+    _ <- acquireResource
+    _ <- Scope.addFinalizer(cleanup)
+  } yield ()
+```
+
+### Exit-Dependent Finalizers
+
+```scala
+val withExitFinalizer: ZIO[Scope, Nothing, Unit] = 
+  Scope.addFinalizerExit { exit =>
+    exit match {
+      case Exit.Success(_) => 
+        Console.printLine("Succeeded")
+      case Exit.Failure(cause) => 
+        Console.printLine(s"Failed: $cause")
+    }
+  }
+```
+
+### Forking Scopes
+
+Create child scopes:
+
+```scala
+val forkedScope: ZIO[Scope, Nothing, Scope.Closeable] = 
+  ZIO.scope.flatMap(_.fork)
+```
+
+## Common Patterns
+
+### File Operations
+
+```scala
+def processFile(path: String): Task[String] = 
+  ZIO.scoped {
+    ZIO.acquireReleaseWith(
+      acquire = ZIO.attempt(Source.fromFile(path))
+    )(
+      release = source => ZIO.succeed(source.close())
+    )(
+      use = source => ZIO.attempt(source.mkString)
+    )
+  }
+```
+
+### Database Connections
+
+```scala
+def withConnection[A](use: Connection => Task[A]): Task[A] = 
+  ZIO.scoped {
+    ZIO.acquireReleaseWith(
+      acquire = openConnection
+    )(
+      release = conn => closeConnection(conn).orDie
+    )(
+      use = use
+    )
+  }
+```
+
+### HTTP Clients
+
+```scala
+def withHttpClient[A](use: HttpClient => Task[A]): Task[A] = 
+  ZIO.scoped {
+    ZIO.acquireReleaseWith(
+      acquire = createHttpClient
+    )(
+      release = client => client.close().orDie
+    )(
+      use = use
+    )
+  }
+```
+
+## Resource Pools
+
+### Creating Pools
+
+```scala
+def makePool(
+  size: Int
+): ZIO[Scope, Nothing, Pool[Connection]] = 
+  ZIO.acquireRelease(
+    acquire = Pool.make(
+      create = openConnection,
+      min = size / 2,
+      max = size
+    )
+  )(
+    release = pool => pool.shutdown
+  )
+```
+
+### Using Pools
+
+```scala
+val withPool: Task[Unit] = 
+  ZIO.scoped {
+    for {
+      pool <- makePool(10)
+      _    <- pool.use { conn =>
+                doWork(conn)
+              }
+    } yield ()
+  }
+```
+
+## Scoped Layers
+
+Integrate resources with ZLayer:
+
+```scala
+val databaseLayer: ZLayer[Any, Throwable, Database] = 
+  ZLayer.scoped {
+    ZIO.acquireRelease(
+      acquire = Database.connect
+    )(
+      release = db => db.close()
+    )
+  }
+
+// Use in application
+val program: ZIO[Database, Throwable, Unit] = 
+  doWork.provide(databaseLayer)
+```
+
+## AutoCloseable Integration
+
+ZIO provides special support for Java's `AutoCloseable`:
+
+```scala
+import java.io._
+
+val autoClose: Task[String] = 
+  ZIO.scoped {
+    ZIO.acquireReleaseWith(
+      acquire = ZIO.attempt(new FileReader("data.txt"))
+    )(
+      release = reader => ZIO.succeed(reader.close())
+    )(
+      use = reader => readAll(reader)
+    )
+  }
+
+// Shorter syntax
+val withAuto: Task[String] = 
+  ZIO.attempt(new FileReader("data.txt"))
+    .acquireReleaseWithAuto(reader => readAll(reader))
+```
+
+## Concurrent Resource Management
+
+### Parallel Resource Acquisition
+
+```scala
+val parallel: Task[(Connection, Cache)] = 
+  ZIO.scoped {
+    for {
+      connFiber  <- acquireConnection.fork
+      cacheFiber <- acquireCache.fork
+      conn       <- connFiber.join
+      cache      <- cacheFiber.join
+    } yield (conn, cache)
+  }  // Both released even if one acquisition fails
+```
+
+### Scoped Forks
+
+Fork fibers within a scope:
+
+```scala
+val scopedFork: Task[Unit] = 
+  ZIO.scoped {
+    for {
+      resource <- acquireResource
+      _        <- backgroundWork(resource).forkScoped
+      _        <- mainWork(resource)
+    } yield ()
+  }  // Background fiber interrupted when scope closes
+```
+
+## Execution Strategies
+
+### Sequential Finalization
+
+Run finalizers one after another (default):
+
+```scala
+val sequential: UIO[Scope.Closeable] = 
+  Scope.make  // Uses ExecutionStrategy.Sequential
+```
+
+### Parallel Finalization
+
+Run finalizers concurrently:
+
+```scala
+val parallel: UIO[Scope.Closeable] = 
+  ZIO.scope.flatMap(
+    _.forkWith(ExecutionStrategy.Parallel)
+  )
+```
+
+### ParallelN Finalization
+
+Limit parallelism:
+
+```scala
+val limited: UIO[Scope.Closeable] = 
+  ZIO.scope.flatMap(
+    _.forkWith(ExecutionStrategy.ParallelN(4))
+  )
+```
+
+## Global Scope
+
+For resources that live for the entire application (`Scope.scala:139-148`):
+
+```scala
+val global: Scope.Closeable = Scope.global
+
+// Finalizers are discarded
+val ignored: UIO[Unit] = 
+  global.addFinalizer(cleanup)  // No-op
+```
+
+<Warning>
+  Use global scope only for truly application-lifetime resources. Prefer scoped resources for better safety.
+</Warning>
+
+## Interruption Safety
+
+### Uninterruptible Regions
+
+```scala
+val safe: ZIO[Scope, Throwable, Unit] = 
+  ZIO.uninterruptible {
+    for {
+      resource <- acquireResource
+      _        <- Scope.addFinalizer(releaseResource(resource))
+    } yield ()
+  }
+```
+
+### Interruptible Usage
+
+```scala
+val pattern: Task[String] = 
+  ZIO.uninterruptibleMask { restore =>
+    ZIO.acquireReleaseWith(
+      acquire = openResource  // Uninterruptible
+    )(
+      release = closeResource // Uninterruptible
+    )(
+      use = resource => restore(useResource(resource))  // Interruptible
+    )
+  }
+```
+
+## Best Practices
+
+<Tip>
+  **Always use scoped resources** for anything that needs cleanup. Don't rely on manual release.
+</Tip>
+
+<Tip>
+  **Make acquisition uninterruptible** to avoid partial resource allocation.
+</Tip>
+
+<Tip>
+  **Make release infallible** using `.orDie` if the release effect can fail but shouldn't prevent cleanup.
+</Tip>
+
+<Tip>
+  **Layer resources at the boundary** of your application using `ZLayer.scoped`.
+</Tip>
+
+<Warning>
+  **Don't escape resources** from their scope. The resource is only valid within the `ZIO.scoped` block.
+</Warning>
+
+## Testing Scoped Resources
+
+```scala
+import zio.test._
+
+object ResourceSpec extends ZIOSpecDefault {
+  def spec = suite("ResourceSpec")(
+    test("resource is cleaned up") {
+      for {
+        ref    <- Ref.make(false)
+        _      <- ZIO.scoped {
+                    ZIO.acquireRelease(
+                      acquire = ZIO.succeed("resource")
+                    )(
+                      release = _ => ref.set(true)
+                    )
+                  }
+        closed <- ref.get
+      } yield assertTrue(closed)
+    }
+  )
+}
+```
+
+## Common Mistakes
+
+<Warning>
+  **Leaking resources**: Forgetting to use `ZIO.scoped` around resource acquisition.
+  
+  ```scala
+  // Wrong - resource leaks
+  val leaked = acquireResource.flatMap(use)
+  
+  // Correct
+  val safe = ZIO.scoped(acquireResource.flatMap(use))
+  ```
+</Warning>
+
+<Warning>
+  **Escaping scope**: Returning resources outside their scope.
+  
+  ```scala
+  // Wrong - resource invalid after scope
+  val escaped = ZIO.scoped(acquireResource)
+  
+  // Correct - use within scope
+  val safe = ZIO.scoped(acquireResource.flatMap(use))
+  ```
+</Warning>
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="ZIO Effect" icon="wand-magic-sparkles" href="/core/zio-effect">
+    Understand the effect type that powers scopes
+  </Card>
+  <Card title="Error Handling" icon="triangle-exclamation" href="/core/error-handling">
+    Handle errors in resource acquisition and usage
+  </Card>
+  <Card title="ZLayer" icon="layer-group" href="/services/zlayer">
+    Manage dependencies with scoped layers
+  </Card>
+  <Card title="Testing" icon="flask" href="/testing/overview">
+    Test resource management in your applications
+  </Card>
+</CardGroup>

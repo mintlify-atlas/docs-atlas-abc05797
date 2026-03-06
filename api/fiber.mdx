@@ -1,0 +1,228 @@
+---
+title: Fiber[E, A]
+description: API reference for ZIO's Fiber lightweight thread
+---
+
+## Overview
+
+A fiber is a lightweight thread of execution that never consumes more than a whole thread (but may consume much less, depending on contention and asynchronicity). Fibers are spawned by forking ZIO effects, which run concurrently with the parent effect.
+
+Fibers can be joined, yielding their result to other fibers, or interrupted, which terminates the fiber, safely releasing all resources.
+
+## Type Signature
+
+```scala
+sealed abstract class Fiber[+E, +A]
+```
+
+<ParamField path="E" type="type">
+  The error type
+</ParamField>
+
+<ParamField path="A" type="type">
+  The success type
+</ParamField>
+
+## Constructors
+
+### done
+
+A fiber that is done with the specified exit value.
+
+```scala
+def done[E, A](exit: => Exit[E, A]): Fiber.Synthetic[E, A]
+```
+
+<ParamField path="exit" type="Exit[E, A]">
+  The exit value for the completed fiber
+</ParamField>
+
+### succeed
+
+Returns a fiber that has already succeeded with the specified value.
+
+```scala
+def succeed[A](a: A): Fiber.Synthetic[Nothing, A]
+```
+
+<ParamField path="a" type="A">
+  The success value
+</ParamField>
+
+### fail
+
+A fiber that has already failed with the specified error.
+
+```scala
+def fail[E](e: E): Fiber.Synthetic[E, Nothing]
+```
+
+<ParamField path="e" type="E">
+  The failure value
+</ParamField>
+
+### fromZIO
+
+Lifts a ZIO into a Fiber.
+
+```scala
+def fromZIO[E, A](io: IO[E, A])(implicit trace: Trace): UIO[Fiber.Synthetic[E, A]]
+```
+
+<ParamField path="io" type="IO[E, A]">
+  The effect to convert to a fiber
+</ParamField>
+
+## Key Methods
+
+### await
+
+Awaits the fiber, suspending the awaiting fiber until the result has been determined.
+
+```scala
+def await(implicit trace: Trace): UIO[Exit[E, A]]
+```
+
+**Returns:** The exit value of the fiber
+
+### join
+
+Joins the fiber, suspending the joining fiber until the result has been determined. Attempting to join a fiber that has erred will result in a catchable error.
+
+```scala
+final def join(implicit trace: Trace): IO[E, A]
+```
+
+**Returns:** The success value of the fiber
+
+### interrupt
+
+Interrupts the fiber from whichever fiber is calling this method.
+
+```scala
+final def interrupt(implicit trace: Trace): UIO[Exit[E, A]]
+```
+
+**Returns:** The exit value after interruption
+
+### interruptAs
+
+Interrupts the fiber as if interrupted from the specified fiber.
+
+```scala
+def interruptAs(fiberId: FiberId)(implicit trace: Trace): UIO[Exit[E, A]]
+```
+
+<ParamField path="fiberId" type="FiberId">
+  The ID of the fiber to interrupt as
+</ParamField>
+
+### interruptFork
+
+Interrupts the fiber in a separate daemon fiber, returning immediately.
+
+```scala
+final def interruptFork(implicit trace: Trace): UIO[Unit]
+```
+
+### map
+
+Maps over the value the Fiber computes.
+
+```scala
+final def map[B](f: A => B): Fiber.Synthetic[E, B]
+```
+
+<ParamField path="f" type="A => B">
+  The mapping function
+</ParamField>
+
+### zip
+
+Zips this fiber with the specified fiber to produce a tuple of their outputs.
+
+```scala
+final def zip[E1 >: E, B](that: => Fiber[E1, B]): Fiber.Synthetic[E1, (A, B)]
+```
+
+<ParamField path="that" type="Fiber[E1, B]">
+  The fiber to zip with
+</ParamField>
+
+### zipWith
+
+Zips this fiber with the specified fiber using the specified combiner function.
+
+```scala
+final def zipWith[E1 >: E, B, C](that: => Fiber[E1, B])(f: (A, B) => C): Fiber.Synthetic[E1, C]
+```
+
+### orElse
+
+Returns a fiber that prefers this fiber, but falls back to that one when this one fails.
+
+```scala
+def orElse[E1, A1 >: A](that: => Fiber[E1, A1])(implicit ev: CanFail[E]): Fiber.Synthetic[E1, A1]
+```
+
+## Examples
+
+### Forking and Joining Fibers
+
+```scala
+import zio._
+
+val program = for {
+  fiber <- ZIO.succeed(42).fork
+  result <- fiber.join
+} yield result
+// result: 42
+```
+
+### Running Fibers in Parallel
+
+```scala
+def parallel[A, B](io1: Task[A], io2: Task[B]): Task[(A, B)] =
+  for {
+    fiber1 <- io1.fork
+    fiber2 <- io2.fork
+    a      <- fiber1.join
+    b      <- fiber2.join
+  } yield (a, b)
+```
+
+### Interrupting Fibers
+
+```scala
+val program = for {
+  fiber  <- ZIO.never.fork
+  _      <- fiber.interrupt
+  result <- fiber.await
+} yield result
+// result: Exit.Interrupted
+```
+
+### Zipping Fibers
+
+```scala
+val program = for {
+  fiber1 <- ZIO.succeed(1).fork
+  fiber2 <- ZIO.succeed(2).fork
+  fiber  = fiber1 zip fiber2
+  result <- fiber.join
+} yield result
+// result: (1, 2)
+```
+
+### Awaiting Multiple Fibers
+
+```scala
+import zio._
+
+val program = for {
+  fiber1 <- ZIO.succeed(1).fork
+  fiber2 <- ZIO.succeed(2).fork
+  fiber3 <- ZIO.succeed(3).fork
+  _      <- Fiber.awaitAll(List(fiber1, fiber2, fiber3))
+} yield ()
+```

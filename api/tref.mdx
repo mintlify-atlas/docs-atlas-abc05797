@@ -1,0 +1,346 @@
+---
+title: 'TRef'
+description: 'Transactional mutable reference for safe concurrent state management'
+---
+
+# TRef
+
+A `TRef[A]` is a purely functional description of a mutable reference that can be modified as part of a transactional effect. The fundamental operations are `set` and `get`.
+
+## Overview
+
+`TRef` provides the transactional equivalent of a mutable reference. All operations on a `TRef` are transactional and can be composed with other STM operations into larger atomic transactions.
+
+**Important**: While `TRef` provides a transactional mutable reference, the value inside should be immutable. `TRef` is implemented using compare-and-swap operations which are not safe for mutable values that don't support concurrent access.
+
+## Creating TRef
+
+### make
+
+```scala
+def make[A](a: => A): USTM[TRef[A]]
+```
+
+Creates a new `TRef` initialized to the specified value.
+
+```scala
+val createRef: USTM[TRef[Int]] = TRef.make(0)
+```
+
+### makeCommit
+
+```scala
+def makeCommit[A](a: => A)(implicit trace: Trace): UIO[TRef[A]]
+```
+
+Creates a new `TRef` and immediately commits the transaction.
+
+```scala
+val program = for {
+  ref <- TRef.makeCommit(100)
+  _   <- ref.update(_ + 1).commit
+} yield ()
+```
+
+## Reading Values
+
+### get
+
+```scala
+def get: USTM[A]
+```
+
+Retrieves the current value of the `TRef`.
+
+```scala
+val tx: USTM[Int] = for {
+  ref   <- TRef.make(42)
+  value <- ref.get
+} yield value
+```
+
+## Writing Values
+
+### set
+
+```scala
+def set(a: A): USTM[Unit]
+```
+
+Sets the value of the `TRef`.
+
+```scala
+val tx: USTM[Unit] = for {
+  ref <- TRef.make(0)
+  _   <- ref.set(100)
+} yield ()
+```
+
+### update
+
+```scala
+def update(f: A => A): USTM[Unit]
+```
+
+Updates the value using the specified function.
+
+```scala
+val tx: USTM[Unit] = for {
+  ref <- TRef.make(10)
+  _   <- ref.update(_ * 2)
+} yield ()
+```
+
+### updateSome
+
+```scala
+def updateSome(f: PartialFunction[A, A]): USTM[Unit]
+```
+
+Updates some values but leaves others alone.
+
+```scala
+val tx: USTM[Unit] = ref.updateSome {
+  case n if n > 0 => n * 2
+}
+```
+
+## Atomic Read-Modify-Write
+
+### modify
+
+```scala
+def modify[B](f: A => (B, A)): USTM[B]
+```
+
+Atomically modifies the value and returns a result.
+
+```scala
+val tx: USTM[Int] = for {
+  ref    <- TRef.make(100)
+  oldVal <- ref.modify(v => (v, v + 10)) // Returns old value, sets new value
+} yield oldVal
+```
+
+### modifySome
+
+```scala
+def modifySome[B](default: B)(f: PartialFunction[A, (B, A)]): USTM[B]
+```
+
+Modifies some values, returning a default for others.
+
+```scala
+val tx: USTM[String] = ref.modifySome("unchanged") {
+  case n if n > 0 => ("positive", n * 2)
+  case n if n < 0 => ("negative", n * 2)
+}
+```
+
+### getAndSet
+
+```scala
+def getAndSet(a: A): USTM[A]
+```
+
+Sets the value and returns the old value.
+
+```scala
+val tx: USTM[Int] = for {
+  ref    <- TRef.make(10)
+  oldVal <- ref.getAndSet(20)
+} yield oldVal // Returns 10
+```
+
+### getAndUpdate
+
+```scala
+def getAndUpdate(f: A => A): USTM[A]
+```
+
+Updates the value and returns the old value.
+
+```scala
+val tx: USTM[Int] = for {
+  ref    <- TRef.make(10)
+  oldVal <- ref.getAndUpdate(_ * 2)
+} yield oldVal // Returns 10
+```
+
+### updateAndGet
+
+```scala
+def updateAndGet(f: A => A): USTM[A]
+```
+
+Updates the value and returns the new value.
+
+```scala
+val tx: USTM[Int] = for {
+  ref    <- TRef.make(10)
+  newVal <- ref.updateAndGet(_ * 2)
+} yield newVal // Returns 20
+```
+
+### updateSomeAndGet
+
+```scala
+def updateSomeAndGet(f: PartialFunction[A, A]): USTM[A]
+```
+
+Updates some values and returns the new value.
+
+```scala
+val tx: USTM[Int] = ref.updateSomeAndGet {
+  case n if n > 0 => n * 2
+}
+```
+
+### getAndUpdateSome
+
+```scala
+def getAndUpdateSome(f: PartialFunction[A, A]): USTM[A]
+```
+
+Updates some values and returns the old value.
+
+```scala
+val tx: USTM[Int] = ref.getAndUpdateSome {
+  case n if n > 0 => n * 2
+}
+```
+
+## Example: Counter
+
+```scala
+import zio._
+import zio.stm._
+
+class Counter(private val ref: TRef[Int]) {
+  def increment: UIO[Unit] = ref.update(_ + 1).commit
+  def decrement: UIO[Unit] = ref.update(_ - 1).commit
+  def get: UIO[Int] = ref.get.commit
+  def reset: UIO[Unit] = ref.set(0).commit
+}
+
+object Counter {
+  def make(initial: Int = 0): UIO[Counter] =
+    TRef.makeCommit(initial).map(new Counter(_))
+}
+
+// Usage
+val program = for {
+  counter <- Counter.make(0)
+  _       <- counter.increment
+  _       <- counter.increment
+  value   <- counter.get
+  _       <- Console.printLine(s"Counter: $value")
+} yield ()
+```
+
+## Example: Account Balance
+
+```scala
+import zio._
+import zio.stm._
+
+class Account(private val balance: TRef[BigDecimal]) {
+  
+  def deposit(amount: BigDecimal): UIO[Unit] = 
+    balance.update(_ + amount).commit
+  
+  def withdraw(amount: BigDecimal): IO[String, Unit] = (
+    for {
+      current <- balance.get
+      _       <- STM.check(current >= amount)
+                   .mapError(_ => "Insufficient funds")
+      _       <- balance.update(_ - amount)
+    } yield ()
+  ).commit
+  
+  def getBalance: UIO[BigDecimal] = 
+    balance.get.commit
+}
+
+object Account {
+  def make(initialBalance: BigDecimal): UIO[Account] =
+    TRef.makeCommit(initialBalance).map(new Account(_))
+}
+```
+
+## Example: Coordinated Updates
+
+```scala
+import zio._
+import zio.stm._
+
+def transferFunds(
+  from: TRef[BigDecimal],
+  to: TRef[BigDecimal],
+  amount: BigDecimal
+): IO[String, Unit] = (
+  for {
+    fromBalance <- from.get
+    _           <- STM.check(fromBalance >= amount)
+                     .mapError(_ => "Insufficient funds")
+    _           <- from.update(_ - amount)
+    _           <- to.update(_ + amount)
+  } yield ()
+).commit
+
+// Usage: Transfer is atomic - both accounts update or neither does
+val program = for {
+  alice <- TRef.makeCommit(BigDecimal(1000))
+  bob   <- TRef.makeCommit(BigDecimal(500))
+  _     <- transferFunds(alice, bob, BigDecimal(200))
+  a     <- alice.get.commit
+  b     <- bob.get.commit
+  _     <- Console.printLine(s"Alice: $$${a}, Bob: $$${b}")
+} yield ()
+```
+
+## Example: Retry Until Condition
+
+```scala
+import zio._
+import zio.stm._
+
+// Wait until value reaches threshold
+def waitForValue(ref: TRef[Int], threshold: Int): UIO[Int] = (
+  for {
+    value <- ref.get
+    _     <- STM.check(value >= threshold) // Retries until true
+  } yield value
+).commit
+
+// Usage
+val program = for {
+  ref <- TRef.makeCommit(0)
+  _   <- ref.update(_ + 1).commit.repeat(Schedule.spaced(1.second)).fork
+  _   <- Console.printLine("Waiting for value to reach 5...")
+  v   <- waitForValue(ref, 5)
+  _   <- Console.printLine(s"Value reached: $v")
+} yield ()
+```
+
+## Best Practices
+
+1. **Immutable values**: Store immutable data in TRef for thread safety
+2. **Keep transactions short**: Minimize work inside transactions to reduce conflicts
+3. **Compose atomically**: Combine multiple TRef operations into single transactions
+4. **Use check for conditions**: `STM.check` automatically retries when conditions aren't met
+5. **Prefer STM over locks**: TRef provides better composability than traditional locks
+
+## Performance Considerations
+
+- TRef uses optimistic concurrency control with automatic retries
+- Conflicts cause transactions to retry, so keep critical sections small
+- Very high contention may cause many retries - consider redesigning your data structure
+- TRef operations are generally faster than lock-based alternatives for low to moderate contention
+
+## See Also
+
+- [ZSTM](/api/zstm) - Core STM effect type
+- [TArray](/api/tarray) - Transactional arrays
+- [TMap](/api/tmap) - Transactional maps
+- [TQueue](/api/tqueue) - Transactional queues

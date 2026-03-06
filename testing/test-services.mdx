@@ -1,0 +1,679 @@
+---
+title: Test Services
+description: Control time, randomness, console, and system for deterministic tests
+---
+
+ZIO Test provides test implementations of core services that allow you to control time, randomness, console I/O, and system properties in your tests. This makes tests fast, deterministic, and reproducible.
+
+## Why Test Services?
+
+In production, your code interacts with the real world:
+- Time passes continuously
+- Random values are unpredictable  
+- Console I/O goes to the terminal
+- System properties reflect the actual environment
+
+In tests, you want:
+- **Deterministic behavior** - Same inputs produce same outputs
+- **Fast execution** - No waiting for real time to pass
+- **Reproducible results** - Tests pass consistently
+- **Controlled environment** - Test different scenarios easily
+
+Test services provide this control while keeping your code unchanged.
+
+## Available Test Services
+
+ZIO Test provides four main test services:
+
+<CardGroup cols={2}>
+  <Card title="TestClock" icon="clock">
+    Control the passage of time
+  </Card>
+  <Card title="TestRandom" icon="dice">
+    Deterministic random values
+  </Card>
+  <Card title="TestConsole" icon="terminal">
+    Capture and control console I/O
+  </Card>
+  <Card title="TestSystem" icon="gear">
+    Control environment and properties
+  </Card>
+</CardGroup>
+
+## TestClock
+
+TestClock allows you to control time in tests without waiting for real time to pass.
+
+### Basic Usage
+
+```scala
+import zio._
+import zio.test._
+
+test("timeout example") {
+  for {
+    fiber  <- ZIO.sleep(5.minutes).timeout(1.minute).fork
+    _      <- TestClock.adjust(1.minute)
+    result <- fiber.join
+  } yield assertTrue(result.isEmpty)
+}
+```
+
+### Adjusting Time
+
+```scala
+test("adjust time") {
+  for {
+    time1 <- Clock.currentTime(TimeUnit.SECONDS)
+    _     <- TestClock.adjust(1.hour)
+    time2 <- Clock.currentTime(TimeUnit.SECONDS)
+  } yield assertTrue(time2 - time1 == 3600)
+}
+```
+
+### Setting Time
+
+Set the clock to a specific instant:
+
+```scala
+import java.time.Instant
+
+test("set time") {
+  val specificTime = Instant.parse("2024-01-01T00:00:00Z")
+  
+  for {
+    _    <- TestClock.setTime(specificTime)
+    time <- Clock.instant
+  } yield assertTrue(time == specificTime)
+}
+```
+
+### Testing Recurring Effects
+
+Test effects that repeat on a schedule:
+
+```scala
+test("recurring effect") {
+  for {
+    ref   <- Ref.make(0)
+    _     <- ref.update(_ + 1).delay(1.minute).forever.fork
+    count1 <- ref.get
+    _     <- TestClock.adjust(1.minute)
+    count2 <- ref.get  
+    _     <- TestClock.adjust(1.minute)
+    count3 <- ref.get
+  } yield assertTrue(
+    count1 == 0,  // Nothing happened yet
+    count2 == 1,  // One execution after 1 minute
+    count3 == 2   // Two executions after 2 minutes
+  )
+}
+```
+
+### Testing Timeouts
+
+```scala
+test("effect times out") {
+  for {
+    fiber  <- ZIO.never.timeout(30.seconds).fork
+    _      <- TestClock.adjust(30.seconds)
+    result <- fiber.join
+  } yield assertTrue(result.isEmpty)
+}
+```
+
+### Time Zones
+
+```scala
+import java.time.ZoneId
+
+test("change timezone") {
+  val tokyo = ZoneId.of("Asia/Tokyo")
+  
+  for {
+    _    <- TestClock.setTimeZone(tokyo)
+    zone <- TestClock.timeZone
+  } yield assertTrue(zone == tokyo)
+}
+```
+
+### Checking Sleeps
+
+Inspect what fibers are sleeping:
+
+```scala
+test("inspect sleeps") {
+  for {
+    _      <- ZIO.sleep(5.minutes).fork
+    _      <- ZIO.sleep(10.minutes).fork
+    sleeps <- TestClock.sleeps
+  } yield assertTrue(sleeps.length == 2)
+}
+```
+
+### Adjust With
+
+Run an effect and adjust time together:
+
+```scala
+test("adjust with") {
+  for {
+    ref <- Ref.make(false)
+    _   <- TestClock.adjustWith(1.hour) {
+      ZIO.sleep(30.minutes) *> ref.set(true)
+    }
+    value <- ref.get
+  } yield assertTrue(value == true)
+}
+```
+
+## TestRandom
+
+TestRandom provides deterministic random number generation.
+
+### Basic Usage
+
+```scala
+test("deterministic random") {
+  for {
+    n1 <- Random.nextInt
+    _  <- TestRandom.setSeed(42)
+    n2 <- Random.nextInt
+    _  <- TestRandom.setSeed(42)
+    n3 <- Random.nextInt
+  } yield assertTrue(n2 == n3)  // Same seed = same values
+}
+```
+
+### Setting Seeds
+
+```scala
+test("set seed") {
+  for {
+    _  <- TestRandom.setSeed(12345)
+    n1 <- Random.nextInt
+    n2 <- Random.nextInt
+  } yield assertTrue(
+    n1 != n2,  // Different values
+    n1 == n1   // But deterministic
+  )
+}
+```
+
+### Feeding Values
+
+Provide specific random values:
+
+```scala
+test("feed random values") {
+  for {
+    _  <- TestRandom.feedInts(1, 2, 3, 4, 5)
+    n1 <- Random.nextInt
+    n2 <- Random.nextInt
+    n3 <- Random.nextInt
+  } yield assertTrue(
+    n1 == 1,
+    n2 == 2,
+    n3 == 3
+  )
+}
+```
+
+### Different Value Types
+
+<Tabs>
+  <Tab title="Integers">
+    ```scala
+    TestRandom.feedInts(1, 2, 3)
+    ```
+  </Tab>
+  <Tab title="Longs">
+    ```scala
+    TestRandom.feedLongs(100L, 200L, 300L)
+    ```
+  </Tab>
+  <Tab title="Doubles">
+    ```scala
+    TestRandom.feedDoubles(0.5, 0.7, 0.9)
+    ```
+  </Tab>
+  <Tab title="Booleans">
+    ```scala
+    TestRandom.feedBooleans(true, false, true)
+    ```
+  </Tab>
+  <Tab title="Strings">
+    ```scala
+    TestRandom.feedStrings("hello", "world")
+    ```
+  </Tab>
+</Tabs>
+
+### Testing Random Behavior
+
+```scala
+test("random selection") {
+  def pickRandom[A](items: List[A]): ZIO[Any, Nothing, Option[A]] =
+    Random.nextIntBounded(items.length).map(i => items.lift(i))
+
+  for {
+    _      <- TestRandom.feedInts(0, 2, 1)
+    items  = List("a", "b", "c")
+    result1 <- pickRandom(items)
+    result2 <- pickRandom(items)
+    result3 <- pickRandom(items)
+  } yield assertTrue(
+    result1.contains("a"),
+    result2.contains("c"),
+    result3.contains("b")
+  )
+}
+```
+
+### Clearing Data
+
+```scala
+test("clear random data") {
+  for {
+    _ <- TestRandom.feedInts(1, 2, 3)
+    _ <- TestRandom.clearInts
+    _ <- TestRandom.setSeed(42)
+    n <- Random.nextInt
+  } yield assertTrue(n != 1)  // Fed values cleared
+}
+```
+
+## TestConsole
+
+TestConsole captures console input and output for testing.
+
+### Capturing Output
+
+```scala
+test("capture console output") {
+  for {
+    _      <- Console.printLine("Hello")
+    _      <- Console.printLine("World")
+    output <- TestConsole.output
+  } yield assertTrue(
+    output == Vector("Hello\n", "World\n")
+  )
+}
+```
+
+### Providing Input
+
+```scala
+test("feed console input") {
+  for {
+    _     <- TestConsole.feedLines("Alice", "Bob")
+    name1 <- Console.readLine
+    name2 <- Console.readLine
+  } yield assertTrue(
+    name1 == "Alice",
+    name2 == "Bob"
+  )
+}
+```
+
+### Error Output
+
+```scala
+test("capture error output") {
+  for {
+    _      <- Console.printLineError("Error message")
+    errors <- TestConsole.errorOutput
+  } yield assertTrue(
+    errors == Vector("Error message\n")
+  )
+}
+```
+
+### Debug Mode
+
+Show console output during tests:
+
+```scala
+test("debug console") {
+  for {
+    _ <- Console.printLine("Debug message")
+  } yield assertTrue(true)
+} @@ TestAspect.debug
+```
+
+### Silent Mode
+
+Suppress console output:
+
+```scala
+test("silent console") {
+  for {
+    _ <- Console.printLine("Not shown")
+  } yield assertTrue(true)
+} @@ TestAspect.silent
+```
+
+### Clearing Buffers
+
+```scala
+test("clear console buffers") {
+  for {
+    _      <- Console.printLine("Hello")
+    _      <- TestConsole.clearOutput
+    output <- TestConsole.output
+  } yield assertTrue(output.isEmpty)
+}
+```
+
+## TestSystem
+
+TestSystem provides control over environment variables and system properties.
+
+### Environment Variables
+
+```scala
+test("environment variables") {
+  for {
+    _     <- TestSystem.putEnv("USER", "testuser")
+    _     <- TestSystem.putEnv("HOME", "/home/testuser")
+    user  <- System.env("USER")
+    home  <- System.env("HOME")
+  } yield assertTrue(
+    user.contains("testuser"),
+    home.contains("/home/testuser")
+  )
+}
+```
+
+### System Properties
+
+```scala
+test("system properties") {
+  for {
+    _    <- TestSystem.putProperty("app.env", "test")
+    _    <- TestSystem.putProperty("app.version", "1.0.0")
+    env  <- System.property("app.env")
+    ver  <- System.property("app.version")
+  } yield assertTrue(
+    env.contains("test"),
+    ver.contains("1.0.0")
+  )
+}
+```
+
+### Getting All Variables
+
+```scala
+test("all environment") {
+  for {
+    _   <- TestSystem.putEnv("VAR1", "value1")
+    _   <- TestSystem.putEnv("VAR2", "value2")
+    all <- System.envs
+  } yield assertTrue(
+    all.get("VAR1").contains("value1"),
+    all.get("VAR2").contains("value2")
+  )
+}
+```
+
+### Clearing Data
+
+```scala
+test("clear system data") {
+  for {
+    _     <- TestSystem.putEnv("VAR", "value")
+    _     <- TestSystem.clearEnv("VAR")
+    value <- System.env("VAR")
+  } yield assertTrue(value.isEmpty)
+}
+```
+
+### Testing Configuration
+
+```scala
+case class AppConfig(
+  environment: String,
+  port: Int,
+  debug: Boolean
+)
+
+object AppConfig {
+  def load: ZIO[Any, Throwable, AppConfig] =
+    for {
+      env   <- System.env("APP_ENV").someOrFailException
+      port  <- System.env("APP_PORT").map(_.flatMap(_.toIntOption).getOrElse(8080))
+      debug <- System.env("DEBUG").map(_.contains("true"))
+    } yield AppConfig(env, port, debug)
+}
+
+test("load config") {
+  for {
+    _      <- TestSystem.putEnv("APP_ENV", "test")
+    _      <- TestSystem.putEnv("APP_PORT", "9000")
+    _      <- TestSystem.putEnv("DEBUG", "true")
+    config <- AppConfig.load
+  } yield assertTrue(
+    config.environment == "test",
+    config.port == 9000,
+    config.debug == true
+  )
+}
+```
+
+## Combining Test Services
+
+Test services work together seamlessly:
+
+```scala
+test("combined test services") {
+  for {
+    // Setup
+    _ <- TestClock.setTime(Instant.parse("2024-01-01T00:00:00Z"))
+    _ <- TestRandom.setSeed(42)
+    _ <- TestSystem.putEnv("MODE", "test")
+    
+    // Test code using all services
+    time <- Clock.instant
+    rand <- Random.nextInt
+    mode <- System.env("MODE")
+    
+    // Verify
+    _ <- Console.printLine(s"Time: $time, Random: $rand, Mode: $mode")
+    output <- TestConsole.output
+  } yield assertTrue(
+    time == Instant.parse("2024-01-01T00:00:00Z"),
+    mode.contains("test"),
+    output.nonEmpty
+  )
+}
+```
+
+## Using Live Services
+
+Sometimes you need real services instead of test services:
+
+### Live Clock
+
+```scala
+test("measure real time") {
+  for {
+    start <- Live.live(Clock.nanoTime)
+    _     <- Live.live(ZIO.sleep(100.millis))
+    end   <- Live.live(Clock.nanoTime)
+  } yield assertTrue(end - start >= 100000000L)
+} @@ TestAspect.withLiveClock
+```
+
+### Live Random
+
+```scala
+test("truly random") {
+  for {
+    n1 <- Random.nextInt
+    n2 <- Random.nextInt
+  } yield assertTrue(n1 != n2)  // Probably true
+} @@ TestAspect.withLiveRandom @@ TestAspect.nondeterministic
+```
+
+### All Live Services
+
+```scala
+test("all live") {
+  for {
+    time <- Clock.instant
+    rand <- Random.nextInt
+    _    <- Console.printLine("Live execution")
+  } yield assertTrue(true)
+} @@ TestAspect.withLiveEnvironment
+```
+
+## Restoring State
+
+Restore test service state between test runs:
+
+```scala
+test("isolated state") {
+  for {
+    _    <- TestClock.adjust(1.hour)
+    time <- Clock.currentTime(TimeUnit.HOURS)
+  } yield assertTrue(time == 1)
+} @@ TestAspect.nonFlaky(10) @@ TestAspect.restoreTestClock
+```
+
+Available restore aspects:
+- `TestAspect.restoreTestClock`
+- `TestAspect.restoreTestRandom`
+- `TestAspect.restoreTestConsole`
+- `TestAspect.restoreTestSystem`
+- `TestAspect.restoreTestEnvironment` (all services)
+
+## Best Practices
+
+<AccordionGroup>
+  <Accordion title="Fork effects that sleep">
+    When testing sleeps, fork the effect so you can adjust time:
+    ```scala
+    // Good
+    for {
+      fiber <- ZIO.sleep(1.hour).fork
+      _     <- TestClock.adjust(1.hour)
+      _     <- fiber.join
+    } yield assertTrue(true)
+    
+    // Bad - will hang forever
+    for {
+      _     <- ZIO.sleep(1.hour)
+      _     <- TestClock.adjust(1.hour)
+    } yield assertTrue(true)
+    ```
+  </Accordion>
+
+  <Accordion title="Use deterministic seeds">
+    Set seeds explicitly for reproducible tests:
+    ```scala
+    test("reproducible") {
+      for {
+        _ <- TestRandom.setSeed(42)
+        // test code
+      } yield assertTrue(true)
+    }
+    ```
+  </Accordion>
+
+  <Accordion title="Clear console output">
+    Clear output between test steps for cleaner assertions:
+    ```scala
+    for {
+      _ <- Console.printLine("Step 1")
+      _ <- TestConsole.clearOutput
+      _ <- Console.printLine("Step 2")
+      output <- TestConsole.output
+    } yield assertTrue(output == Vector("Step 2\n"))
+    ```
+  </Accordion>
+
+  <Accordion title="Test configuration separately">
+    Test configuration loading with TestSystem:
+    ```scala
+    test("config loading") {
+      for {
+        _ <- TestSystem.putEnv("API_KEY", "test-key")
+        config <- loadConfig()
+      } yield assertTrue(config.apiKey == "test-key")
+    }
+    ```
+  </Accordion>
+</AccordionGroup>
+
+## Common Patterns
+
+### Testing Schedules
+
+```scala
+test("exponential backoff") {
+  val schedule = Schedule.exponential(1.second)
+  
+  for {
+    ref   <- Ref.make(0)
+    fiber <- ref.update(_ + 1)
+      .repeat(schedule)
+      .fork
+    _     <- TestClock.adjust(1.second)
+    c1    <- ref.get
+    _     <- TestClock.adjust(2.seconds)
+    c2    <- ref.get
+    _     <- TestClock.adjust(4.seconds)
+    c3    <- ref.get
+  } yield assertTrue(
+    c1 == 1,
+    c2 == 2,
+    c3 == 3
+  )
+}
+```
+
+### Testing Rate Limiters
+
+```scala
+test("rate limiter") {
+  for {
+    limiter <- RateLimiter.make(5, 1.minute)
+    // Try to make 10 requests
+    results <- ZIO.collectAll(
+      List.fill(10)(limiter.acquire)
+    ).fork
+    // Only 5 should succeed immediately
+    _       <- TestClock.adjust(0.seconds)
+    _       <- ZIO.sleep(100.millis)
+    // Wait for rate limit to reset
+    _       <- TestClock.adjust(1.minute)
+    all     <- results.join
+  } yield assertTrue(all.size == 10)
+}
+```
+
+### Testing Cache Expiration
+
+```scala
+test("cache expires") {
+  for {
+    cache <- Cache.make(
+      capacity = 100,
+      timeToLive = 1.hour
+    )
+    _     <- cache.put("key", "value")
+    v1    <- cache.get("key")
+    _     <- TestClock.adjust(1.hour)
+    v2    <- cache.get("key")
+  } yield assertTrue(
+    v1.contains("value"),
+    v2.isEmpty
+  )
+}
+```
+
+## See Also
+
+- [Testing Overview](/testing/overview) - Introduction to ZIO Test
+- [Test Aspects](/testing/test-aspects) - Modify test behavior  
+- [Assertions](/testing/assertions) - Express test conditions

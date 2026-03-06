@@ -1,0 +1,435 @@
+---
+title: "Runtime"
+description: "The ZIO runtime for executing effects"
+---
+
+## Overview
+
+A `Runtime[R]` is capable of executing tasks within an environment `R`. It bundles together:
+- An environment of type `ZEnvironment[R]`
+- Fiber references (`FiberRefs`)
+- Runtime flags (`RuntimeFlags`)
+
+The runtime provides the execution context needed to run ZIO effects.
+
+## Type Definition
+
+```scala
+trait Runtime[+R] {
+  def environment: ZEnvironment[R]
+  def fiberRefs: FiberRefs
+  def runtimeFlags: RuntimeFlags
+}
+```
+
+## Type Parameters
+
+<ParamField path="R" type="type">
+  The environment type provided by the runtime
+</ParamField>
+
+## Properties
+
+### environment
+
+```scala
+def environment: ZEnvironment[R]
+```
+
+The environment of the runtime, containing all services available to effects executed by this runtime.
+
+<ResponseField name="return" type="ZEnvironment[R]">
+  The runtime environment
+</ResponseField>
+
+### fiberRefs
+
+```scala
+def fiberRefs: FiberRefs
+```
+
+The `FiberRefs` that will be used for all effects executed by this runtime. Fiber references are fiber-local storage, similar to thread-local storage but for ZIO fibers.
+
+<ResponseField name="return" type="FiberRefs">
+  The fiber references
+</ResponseField>
+
+### runtimeFlags
+
+```scala
+def runtimeFlags: RuntimeFlags
+```
+
+The `RuntimeFlags` that will be used for all effects executed by this runtime. Runtime flags control various aspects of effect execution.
+
+<ResponseField name="return" type="RuntimeFlags">
+  The runtime flags
+</ResponseField>
+
+## Methods
+
+### run
+
+```scala
+def run[E, A](zio: ZIO[R, E, A]): IO[E, A]
+```
+
+Runs the effect "purely" through an async boundary. Useful for testing.
+
+<ParamField path="zio" type="ZIO[R, E, A]">
+  The effect to execute
+</ParamField>
+
+<ResponseField name="return" type="IO[E, A]">
+  An effect that completes when the original effect completes
+</ResponseField>
+
+**Example:**
+```scala
+val runtime = Runtime.default
+val result: IO[String, Int] = runtime.run(myEffect)
+```
+
+### mapEnvironment
+
+```scala
+def mapEnvironment[R1](f: ZEnvironment[R] => ZEnvironment[R1]): Runtime[R1]
+```
+
+Constructs a new `Runtime` by mapping the environment.
+
+<ParamField path="f" type="ZEnvironment[R] => ZEnvironment[R1]">
+  Function to transform the environment
+</ParamField>
+
+<ResponseField name="return" type="Runtime[R1]">
+  A new runtime with the transformed environment
+</ResponseField>
+
+### withEnvironment
+
+```scala
+def withEnvironment[R1](r1: ZEnvironment[R1]): Runtime[R1]
+```
+
+Constructs a new `Runtime` with the specified new environment.
+
+<ParamField path="r1" type="ZEnvironment[R1]">
+  The new environment
+</ParamField>
+
+<ResponseField name="return" type="Runtime[R1]">
+  A new runtime with the specified environment
+</ResponseField>
+
+## Unsafe API
+
+The `unsafe` API provides methods that execute effects immediately and unsafely. These methods should only be used at the edges of your application.
+
+### unsafe.fork
+
+```scala
+def fork[E, A](zio: ZIO[R, E, A])(implicit trace: Trace, unsafe: Unsafe): Fiber.Runtime[E, A]
+```
+
+Executes the effect asynchronously, returning a fiber whose methods can await the exit value of the fiber or interrupt the fiber.
+
+<ParamField path="zio" type="ZIO[R, E, A]">
+  The effect to execute
+</ParamField>
+
+<ResponseField name="return" type="Fiber.Runtime[E, A]">
+  A fiber representing the running effect
+</ResponseField>
+
+**Example:**
+```scala
+import zio.Unsafe
+
+Unsafe.unsafe { implicit unsafe =>
+  val fiber = Runtime.default.unsafe.fork(myEffect)
+  // fiber is now running in the background
+}
+```
+
+### unsafe.run
+
+```scala
+def run[E, A](zio: ZIO[R, E, A])(implicit trace: Trace, unsafe: Unsafe): Exit[E, A]
+```
+
+Executes the effect synchronously and returns its result as an `Exit` value. May fail on Scala.js if the effect cannot be entirely run synchronously.
+
+<ParamField path="zio" type="ZIO[R, E, A]">
+  The effect to execute
+</ParamField>
+
+<ResponseField name="return" type="Exit[E, A]">
+  The result of executing the effect
+</ResponseField>
+
+**Example:**
+```scala
+import zio.Unsafe
+
+Unsafe.unsafe { implicit unsafe =>
+  val exit = Runtime.default.unsafe.run(ZIO.succeed(42))
+  exit match {
+    case Exit.Success(value) => println(s"Success: $value")
+    case Exit.Failure(cause) => println(s"Failure: $cause")
+  }
+}
+```
+
+### unsafe.runToFuture
+
+```scala
+def runToFuture[E <: Throwable, A](
+  zio: ZIO[R, E, A]
+)(implicit trace: Trace, unsafe: Unsafe): CancelableFuture[A]
+```
+
+Executes the effect asynchronously, returning a `Future` that will be completed when the effect has been fully executed. The `Future` can be canceled, which will be translated into ZIO's interruption model.
+
+<ParamField path="zio" type="ZIO[R, E, A]">
+  The effect to execute
+</ParamField>
+
+<ResponseField name="return" type="CancelableFuture[A]">
+  A cancelable future representing the running effect
+</ResponseField>
+
+**Example:**
+```scala
+import zio.Unsafe
+import scala.concurrent.ExecutionContext.Implicits.global
+
+Unsafe.unsafe { implicit unsafe =>
+  val future = Runtime.default.unsafe.runToFuture(myEffect)
+  future.onComplete {
+    case scala.util.Success(value) => println(s"Completed: $value")
+    case scala.util.Failure(error) => println(s"Failed: $error")
+  }
+}
+```
+
+## Companion Object
+
+### default
+
+```scala
+val default: Runtime[Any]
+```
+
+The default `Runtime` for most ZIO applications. This runtime is configured with the default runtime configuration, which is optimized for typical ZIO applications.
+
+**Example:**
+```scala
+val runtime = Runtime.default
+```
+
+### apply
+
+```scala
+def apply[R](
+  r: ZEnvironment[R],
+  fiberRefs0: FiberRefs,
+  runtimeFlags0: RuntimeFlags
+): Runtime[R]
+```
+
+Builds a new runtime given an environment `R` and a `FiberRefs`.
+
+<ParamField path="r" type="ZEnvironment[R]">
+  The environment
+</ParamField>
+
+<ParamField path="fiberRefs0" type="FiberRefs">
+  The fiber references
+</ParamField>
+
+<ParamField path="runtimeFlags0" type="RuntimeFlags">
+  The runtime flags
+</ParamField>
+
+**Example:**
+```scala
+val customRuntime = Runtime(
+  ZEnvironment(myService),
+  FiberRefs.empty,
+  RuntimeFlags.default
+)
+```
+
+### unsafe.fromLayer
+
+```scala
+def fromLayer[R](
+  layer: Layer[Any, R]
+)(implicit trace: Trace, unsafe: Unsafe): Runtime.Scoped[R]
+```
+
+Unsafely creates a `Runtime` from a `ZLayer` whose resources will be allocated immediately, and not released until the `Runtime` is shut down or the end of the application.
+
+<ParamField path="layer" type="Layer[Any, R]">
+  The layer to build the runtime from
+</ParamField>
+
+<ResponseField name="return" type="Runtime.Scoped[R]">
+  A scoped runtime that can be shut down
+</ResponseField>
+
+**Example:**
+```scala
+import zio.Unsafe
+
+Unsafe.unsafe { implicit unsafe =>
+  val runtime = Runtime.unsafe.fromLayer(DatabaseLive.layer)
+  // Use the runtime...
+  runtime.unsafe.shutdown()
+}
+```
+
+## Configuration Layers
+
+The `Runtime` companion object provides several layer constructors for configuring runtime behavior:
+
+### addLogger
+
+```scala
+def addLogger(logger: ZLogger[String, Any]): ZLayer[Any, Nothing, Unit]
+```
+
+Adds a custom logger to the runtime.
+
+<ParamField path="logger" type="ZLogger[String, Any]">
+  The logger to add
+</ParamField>
+
+**Example:**
+```scala
+val loggingLayer = Runtime.addLogger(myCustomLogger)
+```
+
+### enableFlags
+
+```scala
+def enableFlags(flags: RuntimeFlag*): ZLayer[Any, Nothing, Unit]
+```
+
+Enables the specified runtime flags.
+
+<ParamField path="flags" type="RuntimeFlag*">
+  The flags to enable
+</ParamField>
+
+**Example:**
+```scala
+val metricsLayer = Runtime.enableFlags(RuntimeFlag.RuntimeMetrics)
+```
+
+### setExecutor
+
+```scala
+def setExecutor(executor: Executor): ZLayer[Any, Nothing, Unit]
+```
+
+Sets the executor for the runtime.
+
+<ParamField path="executor" type="Executor">
+  The executor to use
+</ParamField>
+
+**Example:**
+```scala
+val customExecutorLayer = Runtime.setExecutor(myCustomExecutor)
+```
+
+### setConfigProvider
+
+```scala
+def setConfigProvider(configProvider: ConfigProvider): ZLayer[Any, Nothing, Unit]
+```
+
+Sets the config provider for the runtime.
+
+<ParamField path="configProvider" type="ConfigProvider">
+  The config provider to use
+</ParamField>
+
+**Example:**
+```scala
+val configLayer = Runtime.setConfigProvider(ConfigProvider.fromMap(myConfig))
+```
+
+## Runtime.Scoped
+
+A runtime that can be shut down to release resources allocated to it.
+
+```scala
+final case class Scoped[+R](
+  override val environment: ZEnvironment[R],
+  override val fiberRefs: FiberRefs,
+  override val runtimeFlags: RuntimeFlags,
+  shutdown0: () => Unit
+) extends Runtime[R]
+```
+
+### unsafe.shutdown
+
+```scala
+def shutdown()(implicit unsafe: Unsafe): Unit
+```
+
+Shuts down this runtime and releases resources allocated to it. Once this runtime has been shut down, the behavior of methods on it is undefined and it should be discarded.
+
+**Example:**
+```scala
+import zio.Unsafe
+
+Unsafe.unsafe { implicit unsafe =>
+  val runtime = Runtime.unsafe.fromLayer(myLayer)
+  try {
+    // Use runtime...
+  } finally {
+    runtime.unsafe.shutdown()
+  }
+}
+```
+
+## Complete Example
+
+```scala
+import zio._
+
+// Creating a custom runtime
+object CustomRuntimeExample extends ZIOAppDefault {
+  
+  // Define a custom service
+  trait DatabaseService {
+    def query(sql: String): Task[String]
+  }
+  
+  object DatabaseService {
+    val layer: ULayer[DatabaseService] = ZLayer.succeed(
+      new DatabaseService {
+        def query(sql: String): Task[String] = 
+          ZIO.succeed(s"Result of: $sql")
+      }
+    )
+  }
+  
+  def run = 
+    for {
+      // Access the default runtime
+      defaultRuntime <- ZIO.runtime[Any]
+      
+      // Create a custom runtime with additional services
+      customRuntime = defaultRuntime.mapEnvironment { env =>
+        env.add(DatabaseService.layer)
+      }
+      
+      _ <- Console.printLine("Using custom runtime")
+    } yield ()
+}
+```

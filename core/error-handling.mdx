@@ -1,0 +1,500 @@
+---
+title: 'Error Handling'
+description: 'Composable and type-safe error handling in ZIO'
+icon: 'triangle-exclamation'
+---
+
+# Error Handling
+
+ZIO provides a powerful and type-safe approach to error handling. Unlike exceptions which are invisible in types, ZIO makes errors explicit in the type signature, enabling compile-time error tracking and composable error handling.
+
+## The Error Channel
+
+Every ZIO effect has an error type parameter:
+
+```scala
+ZIO[R, E, A]
+    //  ^ Error type
+```
+
+This error channel tracks what can go wrong:
+
+```scala
+import zio._
+
+// Can fail with String
+val mayFail: IO[String, Int] = 
+  ZIO.fail("Something went wrong")
+
+// Cannot fail
+val cannotFail: UIO[Int] = 
+  ZIO.succeed(42)
+
+// Can fail with Throwable
+val mayThrow: Task[String] = 
+  ZIO.attempt(scala.io.Source.fromFile("data.txt").mkString)
+```
+
+## Cause Data Type
+
+ZIO uses `Cause[E]` to represent all possible failure modes (`Cause.scala:27`):
+
+```scala
+sealed abstract class Cause[+E]
+```
+
+<AccordionGroup>
+  <Accordion title="Failure Types">
+    - **Fail**: Expected errors of type `E`
+    - **Die**: Unexpected defects (like uncaught exceptions)
+    - **Interrupt**: Fiber interruption
+    - **Both**: Parallel failure composition
+    - **Then**: Sequential failure composition
+  </Accordion>
+</AccordionGroup>
+
+## Creating Failures
+
+### Expected Failures
+
+Create typed errors:
+
+```scala
+// Simple failure
+val failure: IO[String, Nothing] = 
+  ZIO.fail("Network timeout")
+
+// Failure with cause
+val withCause: IO[String, Nothing] = 
+  ZIO.failCause(Cause.fail("Database error"))
+
+// From Either
+val fromEither: IO[String, Int] = 
+  ZIO.fromEither(Left("Parse error"))
+
+// From Option
+val fromOption: IO[Option[Nothing], Int] = 
+  ZIO.fromOption(None)
+```
+
+### Defects
+
+Create unrecoverable errors:
+
+```scala
+// Die with throwable
+val defect: UIO[Nothing] = 
+  ZIO.die(new IllegalStateException("Invalid state"))
+
+// Die with message
+val defectMessage: UIO[Nothing] = 
+  ZIO.dieMessage("Unrecoverable error")
+```
+
+<Info>
+  Use **failures** for expected errors that users should handle. Use **defects** for programmer errors and bugs.
+</Info>
+
+## Catching Errors
+
+### catchAll
+
+Recover from all errors (`ZIO.scala:282-285`):
+
+```scala
+val recovered: IO[Nothing, Int] = 
+  ZIO.fail("error")
+    .catchAll { error =>
+      Console.printLine(s"Error: $error") *>
+      ZIO.succeed(0)
+    }
+```
+
+### catchSome
+
+Recover from specific errors:
+
+```scala
+import java.io._
+
+val specific: Task[String] = 
+  readFile("data.txt")
+    .catchSome {
+      case _: FileNotFoundException => 
+        ZIO.succeed("default content")
+      case _: IOException => 
+        ZIO.succeed("error reading file")
+    }
+```
+
+### catchAllCause
+
+Handle the full cause:
+
+```scala
+val withCause: IO[Nothing, String] = 
+  effect
+    .catchAllCause { cause =>
+      if (cause.isInterrupted) 
+        ZIO.succeed("interrupted")
+      else 
+        ZIO.succeed("failed")
+    }
+```
+
+### either
+
+Convert errors to values:
+
+```scala
+val asEither: UIO[Either[String, Int]] = 
+  ZIO.fail("error").either
+
+// Use with pattern matching
+val handled: UIO[Int] = 
+  effect.either.flatMap {
+    case Left(error)  => handleError(error)
+    case Right(value) => ZIO.succeed(value)
+  }
+```
+
+## Error Transformation
+
+### mapError
+
+Transform error types:
+
+```scala
+case class DomainError(message: String)
+
+val mapped: IO[DomainError, Int] = 
+  ZIO.fail("db error")
+    .mapError(msg => DomainError(msg))
+```
+
+### mapErrorCause
+
+Transform the entire cause:
+
+```scala
+val mappedCause: IO[String, Int] = 
+  effect.mapErrorCause { cause =>
+    cause.map(e => s"Wrapped: $e")
+  }
+```
+
+### orDie
+
+Convert expected errors to defects:
+
+```scala
+val asDefect: Task[Int] = 
+  IO.fail(new Exception("error"))
+    .orDie  // Converts IO[Exception, Int] to Task[Int]
+```
+
+### refineOrDie
+
+Narrow error type:
+
+```scala
+val refined: IO[IllegalArgumentException, Int] = 
+  effect.refineOrDie {
+    case e: IllegalArgumentException => e
+  }
+```
+
+## Retry and Fallback
+
+### retry
+
+Retry on failure with a schedule:
+
+```scala
+import zio._
+
+val retried: Task[String] = 
+  fetchData
+    .retry(Schedule.exponential(1.second) && Schedule.recurs(3))
+```
+
+### orElse
+
+Try alternative on failure:
+
+```scala
+val withFallback: IO[String, Int] = 
+  primarySource
+    .orElse(secondarySource)
+    .orElse(ZIO.succeed(defaultValue))
+```
+
+### orElseEither
+
+Fallback with type tracking:
+
+```scala
+val either: IO[Nothing, Either[Int, String]] = 
+  effect1.orElseEither(effect2)
+```
+
+## Timeout Handling
+
+### timeout
+
+Limit execution time:
+
+```scala
+val withTimeout: UIO[Option[String]] = 
+  longRunningEffect.timeout(10.seconds)
+
+val handleTimeout: Task[String] = 
+  longRunningEffect
+    .timeout(10.seconds)
+    .flatMap {
+      case Some(result) => ZIO.succeed(result)
+      case None         => ZIO.fail(new TimeoutException())
+    }
+```
+
+### timeoutFail
+
+Fail with specific error on timeout:
+
+```scala
+val failOnTimeout: IO[String, Int] = 
+  effect.timeoutFail("Timeout exceeded")(5.seconds)
+```
+
+## Ensuring and Finalizers
+
+### ensuring
+
+Run cleanup regardless of outcome:
+
+```scala
+val withCleanup: Task[String] = 
+  acquireResource
+    .flatMap(use)
+    .ensuring(cleanup)
+```
+
+### onError
+
+Run effect only on error:
+
+```scala
+val withErrorHandler: Task[Unit] = 
+  operation
+    .onError(cause => logError(cause))
+```
+
+### onExit
+
+Run effect based on exit status:
+
+```scala
+val withExitHandler: Task[Int] = 
+  effect.onExit {
+    case Exit.Success(value) => 
+      Console.printLine(s"Success: $value")
+    case Exit.Failure(cause) => 
+      Console.printLine(s"Failure: $cause")
+  }
+```
+
+## Error Accumulation
+
+### validate
+
+Collect all errors instead of failing fast:
+
+```scala
+val validated: IO[List[String], List[Int]] = 
+  ZIO.validate(data) { item =>
+    validateItem(item)
+  }
+```
+
+### validatePar
+
+Validate in parallel:
+
+```scala
+val parallelValidation: IO[List[String], List[Int]] = 
+  ZIO.validatePar(data) { item =>
+    validateItem(item)
+  }
+```
+
+## Sandbox and Unsandbox
+
+### sandbox
+
+Expose the full cause as the error:
+
+```scala
+val sandboxed: IO[Cause[String], Int] = 
+  effect.sandbox
+
+// Now you can handle defects
+val handled: IO[String, Int] = 
+  effect.sandbox.catchAll { cause =>
+    if (cause.isDie) 
+      ZIO.succeed(0)
+    else 
+      ZIO.failCause(cause)
+  }
+```
+
+### unsandbox
+
+Restore the original error type:
+
+```scala
+val restored: IO[String, Int] = 
+  sandboxed.unsandbox
+```
+
+## Absorbing Defects
+
+### absorb
+
+Convert defects to typed errors:
+
+```scala
+val absorbed: Task[Int] = 
+  effect.absorb  // IO[E, A] => Task[A] where E <: Throwable
+```
+
+### absorbWith
+
+Convert with custom function:
+
+```scala
+val absorbed: Task[Int] = 
+  effect.absorbWith { error =>
+    new RuntimeException(s"Error: $error")
+  }
+```
+
+## Error Information
+
+### Error Extraction
+
+From Cause (`Cause.scala:117-125`):
+
+```scala
+val errorOption: Option[E] = cause.failureOption
+val errors: List[E] = cause.failures
+val defects: List[Throwable] = cause.defects
+val interrupted: Boolean = cause.isInterrupted
+```
+
+### Stack Traces
+
+Capture stack traces:
+
+```scala
+val withTrace: Task[String] = 
+  effect.catchAllTrace { case (error, trace) =>
+    Console.printLine(s"Error: $error") *>
+    Console.printLine(s"Trace: $trace") *>
+    ZIO.succeed("recovered")
+  }
+```
+
+## Typed Error Hierarchies
+
+Define custom error types:
+
+```scala
+sealed trait AppError
+case class DatabaseError(message: String) extends AppError
+case class ValidationError(field: String) extends AppError
+case class NotFoundError(id: String) extends AppError
+
+val typed: IO[AppError, User] = 
+  findUser(id)
+    .mapError(e => NotFoundError(id))
+```
+
+## Best Practices
+
+<Tip>
+  **Use typed errors** for expected failures. They make your API explicit and enable compile-time checking.
+</Tip>
+
+<Tip>
+  **Reserve defects for bugs**. If users need to handle an error, make it a typed failure.
+</Tip>
+
+<Tip>
+  **Catch specific errors** with `catchSome` rather than catching all errors indiscriminately.
+</Tip>
+
+<Tip>
+  **Use error hierarchies** to group related errors and enable selective handling.
+</Tip>
+
+<Warning>
+  **Don't swallow errors** without logging or handling them. Use `orDie` only when failure truly indicates a bug.
+</Warning>
+
+## Common Patterns
+
+### Error Translation Layer
+
+```scala
+trait DatabaseError
+trait ApiError
+
+def translateError[A](effect: IO[DatabaseError, A]): IO[ApiError, A] = 
+  effect.mapError {
+    case DbConnectionError(msg) => ApiServiceUnavailable(msg)
+    case DbNotFound(id)         => ApiNotFound(id)
+  }
+```
+
+### Retry with Logging
+
+```scala
+val withLogging: Task[String] = 
+  fetchData
+    .tapError(e => Console.printLine(s"Attempt failed: $e"))
+    .retry(Schedule.exponential(1.second) && Schedule.recurs(3))
+```
+
+### Resource-Safe Error Handling
+
+```scala
+val safe: Task[String] = 
+  ZIO.acquireReleaseWith(
+    acquire = openFile("data.txt")
+  )(
+    release = file => ZIO.succeed(file.close())
+  )(
+    use = file => readFile(file)
+      .catchAll { error =>
+        Console.printLine(s"Error: $error") *>
+        ZIO.succeed("default")
+      }
+  )
+```
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Resource Management" icon="box-archive" href="/core/resource-management">
+    Learn about safe resource handling with scopes
+  </Card>
+  <Card title="ZIO Effect" icon="wand-magic-sparkles" href="/core/zio-effect">
+    Understand the effect type that contains errors
+  </Card>
+  <Card title="Best Practices" icon="star" href="/guides/error-handling-patterns">
+    Explore advanced error handling patterns
+  </Card>
+  <Card title="Testing" icon="flask" href="/testing/overview">
+    Test error scenarios in your applications
+  </Card>
+</CardGroup>

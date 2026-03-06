@@ -1,0 +1,417 @@
+---
+title: Ref
+description: Purely functional, atomic mutable references with compare-and-swap operations for safe concurrent state management.
+---
+
+A **Ref** is a purely functional description of a mutable reference. It provides safe, atomic operations for reading and writing shared mutable state in concurrent programs.
+
+## Basic Concept
+
+Unlike `FiberRef` which provides fiber-local state, `Ref` provides shared mutable state that multiple fibers can safely access and modify concurrently.
+
+```scala
+import zio._
+
+val program = for {
+  ref   <- Ref.make(0)
+  _     <- ref.update(_ + 1).repeatN(99).fork
+  _     <- ref.update(_ + 1).repeatN(99).fork
+  value <- ref.get
+} yield value
+// value = 200 (safe concurrent increments)
+```
+
+## Creating Refs
+
+```scala
+import zio._
+
+// Create with initial value
+val ref: UIO[Ref[Int]] = Ref.make(0)
+
+// Unsafe creation (advanced use)
+val unsafeRef: Ref[Int] = Ref.unsafe.make(0)(Unsafe.unsafe)
+```
+
+## Reading and Writing
+
+### Basic Operations
+
+```scala
+val ref: Ref[Int] = ???
+
+// Get current value
+val current: UIO[Int] = ref.get
+
+// Set new value (immediate consistency)
+val updated: UIO[Unit] = ref.set(42)
+
+// Set without immediate consistency guarantee (faster)
+val async: UIO[Unit] = ref.setAsync(42)
+```
+
+<Note>
+  `set` provides immediate consistency but may be slightly slower. `setAsync` is faster but doesn't guarantee immediate visibility to other fibers.
+</Note>
+
+### Atomic Get-and-Set
+
+```scala
+val ref: Ref[Int] = ???
+
+// Get old value and set new value atomically
+val previous: UIO[Int] = ref.getAndSet(42)
+```
+
+## Atomic Updates
+
+### Basic Update
+
+```scala
+val ref: Ref[Int] = ???
+
+// Update with function
+val updated: UIO[Unit] = ref.update(_ + 1)
+
+// Update and get new value
+val newValue: UIO[Int] = ref.updateAndGet(_ + 1)
+
+// Get old value and update
+val oldValue: UIO[Int] = ref.getAndUpdate(_ + 1)
+```
+
+### Partial Updates
+
+```scala
+val ref: Ref[Option[Int]] = ???
+
+// Update only when pattern matches
+val updated: UIO[Unit] = ref.updateSome {
+  case Some(n) if n < 100 => Some(n + 1)
+}
+
+// Update and get result
+val newValue: UIO[Option[Int]] = ref.updateSomeAndGet {
+  case Some(n) => Some(n * 2)
+}
+
+// Get old value and update
+val oldValue: UIO[Option[Int]] = ref.getAndUpdateSome {
+  case Some(n) => Some(n - 1)
+}
+```
+
+## Modify with Return Values
+
+The `modify` operation is the most powerful - it atomically updates the state and returns a value:
+
+```scala
+val ref: Ref[Int] = ???
+
+// Atomically read and update, returning a value
+val result: UIO[String] = ref.modify { current =>
+  val newValue = current + 1
+  (s"Incremented from $current to $newValue", newValue)
+}
+
+// Conditional modification with default return
+val conditional: UIO[Boolean] = ref.modifySome(false) {
+  case n if n < 100 => (true, n + 1)
+}
+```
+
+<Tip>
+  Use `modify` when you need to return a value computed from the state during the update. This ensures atomicity of both the computation and the update.
+</Tip>
+
+## Numeric Operations
+
+For numeric types, `Ref` provides convenient increment/decrement operations:
+
+```scala
+val ref: Ref[Int] = ???
+
+// Increment by 1
+val oldValue: UIO[Int] = ref.getAndIncrement
+val newValue: UIO[Int] = ref.incrementAndGet
+
+// Decrement by 1  
+val oldValue: UIO[Int] = ref.getAndDecrement
+val newValue: UIO[Int] = ref.decrementAndGet
+
+// Add delta
+val oldValue: UIO[Int] = ref.getAndAdd(5)
+val newValue: UIO[Int] = ref.addAndGet(5)
+```
+
+## Counter Pattern
+
+```scala
+import zio._
+
+class Counter(ref: Ref[Int]) {
+  def increment: UIO[Unit] = ref.update(_ + 1)
+  
+  def decrement: UIO[Unit] = ref.update(_ - 1)
+  
+  def get: UIO[Int] = ref.get
+  
+  def reset: UIO[Unit] = ref.set(0)
+  
+  def incrementAndGet: UIO[Int] = ref.updateAndGet(_ + 1)
+}
+
+val program = for {
+  ref     <- Ref.make(0)
+  counter = new Counter(ref)
+  
+  // Concurrent increments
+  _ <- ZIO.foreachParDiscard(1 to 100)(_ => counter.increment)
+  
+  // Get final value
+  total <- counter.get
+} yield total // 100
+```
+
+## State Machine Pattern
+
+```scala
+import zio._
+
+sealed trait ConnectionState
+case object Disconnected extends ConnectionState
+case object Connecting extends ConnectionState
+case object Connected extends ConnectionState
+case object Disconnecting extends ConnectionState
+
+class Connection(state: Ref[ConnectionState]) {
+  def connect: IO[String, Unit] =
+    state.modify {
+      case Disconnected => (ZIO.succeed(()), Connecting)
+      case other        => (ZIO.fail(s"Cannot connect from state: $other"), other)
+    }.flatten
+  
+  def disconnect: IO[String, Unit] =
+    state.modify {
+      case Connected => (ZIO.succeed(()), Disconnecting)
+      case other     => (ZIO.fail(s"Cannot disconnect from state: $other"), other)
+    }.flatten
+  
+  def completeConnection: UIO[Unit] =
+    state.update {
+      case Connecting => Connected
+      case other      => other
+    }
+  
+  def completeDisconnection: UIO[Unit] =
+    state.update {
+      case Disconnecting => Disconnected
+      case other         => other
+    }
+  
+  def getState: UIO[ConnectionState] = state.get
+}
+
+val program = for {
+  ref  <- Ref.make[ConnectionState](Disconnected)
+  conn = new Connection(ref)
+  
+  _     <- conn.connect
+  _     <- conn.completeConnection
+  state <- conn.getState
+} yield state // Connected
+```
+
+## Cache Pattern
+
+```scala
+import zio._
+
+class Cache[K, V](ref: Ref[Map[K, V]]) {
+  def get(key: K): UIO[Option[V]] =
+    ref.get.map(_.get(key))
+  
+  def put(key: K, value: V): UIO[Unit] =
+    ref.update(_ + (key -> value))
+  
+  def getOrElseUpdate(key: K)(compute: UIO[V]): UIO[V] =
+    ref.get.flatMap { map =>
+      map.get(key) match {
+        case Some(value) => ZIO.succeed(value)
+        case None        => 
+          compute.flatMap { value =>
+            ref.update(_ + (key -> value)).as(value)
+          }
+      }
+    }
+  
+  def remove(key: K): UIO[Unit] =
+    ref.update(_ - key)
+  
+  def clear: UIO[Unit] =
+    ref.set(Map.empty)
+}
+
+val program = for {
+  ref   <- Ref.make(Map.empty[String, Int])
+  cache = new Cache(ref)
+  
+  _      <- cache.put("one", 1)
+  _      <- cache.put("two", 2)
+  one    <- cache.get("one")
+  
+  // Compute if absent
+  three  <- cache.getOrElseUpdate("three")(ZIO.succeed(3))
+  three2 <- cache.getOrElseUpdate("three")(ZIO.succeed(999)) // Returns cached value
+} yield (one, three, three2) // (Some(1), 3, 3)
+```
+
+## Synchronization Pattern
+
+```scala
+import zio._
+
+class Barrier(ref: Ref[Int], threshold: Int) {
+  def await: UIO[Unit] =
+    ref.modify { count =>
+      val newCount = count + 1
+      if (newCount >= threshold) {
+        (ZIO.unit, 0) // Reset and release
+      } else {
+        (ZIO.unit *> ZIO.sleep(10.millis) *> await, newCount) // Wait and retry
+      }
+    }.flatten
+}
+
+val program = for {
+  ref     <- Ref.make(0)
+  barrier = new Barrier(ref, 5)
+  
+  // All fibers wait for each other
+  fibers <- ZIO.foreach(1 to 5) { i =>
+              (ZIO.succeed(println(s"Fiber $i: waiting")) *>
+               barrier.await *>
+               ZIO.succeed(println(s"Fiber $i: proceeding"))).fork
+            }
+  
+  _ <- ZIO.foreach(fibers)(_.join)
+} yield ()
+```
+
+## Ref.Synchronized
+
+When you need to perform effects during updates, use `Ref.Synchronized`:
+
+```scala
+import zio._
+
+val program = for {
+  ref <- Ref.Synchronized.make(0)
+  
+  // Can perform effects during modification
+  result <- ref.modifyZIO { current =>
+    for {
+      _        <- ZIO.succeed(println(s"Current value: $current"))
+      newValue <- ZIO.succeed(current + 1)
+      _        <- ZIO.succeed(println(s"New value: $newValue"))
+    } yield (s"Updated from $current to $newValue", newValue)
+  }
+} yield result
+```
+
+<Note>
+  `Ref.Synchronized` uses a semaphore internally to ensure that only one fiber can modify the ref at a time, allowing safe execution of effects. This is slower than regular `Ref` but necessary when effects are involved.
+</Note>
+
+### Synchronized Operations
+
+```scala
+val ref: Ref.Synchronized[Int] = ???
+
+// Update with effect
+val updated: ZIO[Any, Nothing, Unit] = ref.updateZIO { current =>
+  ZIO.succeed(current + 1)
+}
+
+// Modify with effect and return value
+val result: ZIO[Any, Nothing, String] = ref.modifyZIO { current =>
+  for {
+    newValue <- computeNewValue(current)
+  } yield (s"Result: $newValue", newValue)
+}
+
+// Get and update with effect
+val old: ZIO[Any, Nothing, Int] = ref.getAndUpdateZIO { current =>
+  ZIO.succeed(current * 2)
+}
+
+// Update and get with effect
+val new: ZIO[Any, Nothing, Int] = ref.updateAndGetZIO { current =>
+  ZIO.succeed(current * 2)  
+}
+```
+
+## Compare-and-Swap Implementation
+
+Under the hood, `Ref` uses compare-and-swap (CAS) operations:
+
+```scala
+// Conceptually, update works like this:
+def update[A](ref: Ref[A])(f: A => A): UIO[Unit] = {
+  @tailrec
+  def loop(): Unit = {
+    val current = ref.get
+    val next = f(current)
+    if (!compareAndSet(current, next)) loop()
+  }
+  ZIO.succeed(loop())
+}
+```
+
+<Warning>
+  The value inside a `Ref` should be immutable. CAS operations are not safe for mutable values that don't support concurrent access. Use `Ref.Synchronized` if you need mutable values.
+</Warning>
+
+## Performance Characteristics
+
+<Card title="Lock-Free" icon="lock-open">
+  Regular `Ref` uses lock-free CAS operations, providing excellent performance even under high contention.
+</Card>
+
+<Card title="Contention Handling" icon="users">
+  Under high contention, multiple fibers may retry their operations. The automatic retry is handled efficiently by the ZIO runtime.
+</Card>
+
+<Card title="When to Use Synchronized" icon="stopwatch">
+  Only use `Ref.Synchronized` when you need to perform effects during updates. For pure functions, regular `Ref` is significantly faster.
+</Card>
+
+## Best Practices
+
+<Tip>
+  Keep update functions pure and fast. Complex computations should be done outside the update function, passing only the result to `set` or using `modify` to atomically compute and update.
+</Tip>
+
+<Warning>
+  Never perform blocking operations or long-running computations inside `update` functions. This can cause unnecessary retries under contention. Use `Ref.Synchronized.modifyZIO` instead.
+</Warning>
+
+<Card title="Immutability" icon="shield">
+  Always use immutable data structures inside `Ref`. If you need mutable data structures, use `Ref.Synchronized` to ensure proper synchronization.
+</Card>
+
+## Ref vs FiberRef vs TRef
+
+<CardGroup cols={3}>
+  <Card title="Ref" icon="atom">
+    Shared mutable state across all fibers. Use for application-wide state that needs to be accessed concurrently.
+  </Card>
+  
+  <Card title="FiberRef" icon="code-branch">
+    Fiber-local state that's automatically propagated to children. Use for context or configuration that should be inherited by child fibers.
+  </Card>
+  
+  <Card title="TRef" icon="layer-group">
+    Transactional reference used within STM transactions. Use when you need coordinated updates across multiple refs with atomicity guarantees.
+  </Card>
+</CardGroup>

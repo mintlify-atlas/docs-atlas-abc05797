@@ -1,0 +1,382 @@
+---
+title: Promise
+description: A Promise is an asynchronous variable that can be set exactly once, with the ability for multiple fibers to suspend and resume when completed.
+---
+
+A **Promise** is an asynchronous variable of `ZIO` type that can be set exactly once, with the ability for an arbitrary number of fibers to suspend (by calling `await`) and automatically resume when the variable is set.
+
+Promises are useful for building primitive actions whose completions require coordinated action of multiple fibers, and for building higher-level concurrent or asynchronous structures.
+
+## Basic Usage
+
+```scala
+import zio._
+
+val program = for {
+  promise <- Promise.make[Nothing, Int]
+  _       <- promise.succeed(42).delay(1.second).fork
+  value   <- promise.await // Suspends until promise is completed
+} yield value
+// value = 42
+```
+
+## Creating Promises
+
+### Basic Creation
+
+```scala
+import zio._
+
+// Create a promise that will be completed by the current fiber
+val promise: UIO[Promise[E, A]] = Promise.make[E, A]
+
+// Create a promise to be completed by a specific fiber
+val promiseAs: UIO[Promise[E, A]] = Promise.makeAs[E, A](fiberId)
+```
+
+### Unsafe Creation
+
+```scala
+import zio._
+import zio.Unsafe.unsafe
+
+val promise: Promise[E, A] = Promise.unsafe.make[E, A](fiberId)(unsafe)
+```
+
+## Completing Promises
+
+### Success
+
+Complete a promise with a successful value:
+
+```scala
+val promise: Promise[Nothing, Int] = ???
+
+// Complete with success
+val completed: UIO[Boolean] = promise.succeed(42)
+// Returns true if promise was completed, false if already completed
+```
+
+### Failure
+
+Complete a promise with an error:
+
+```scala
+val promise: Promise[String, Nothing] = ???
+
+// Complete with failure
+val failed: UIO[Boolean] = promise.fail("error message")
+
+// Complete with cause (includes full error details)
+val failedCause: UIO[Boolean] = promise.failCause(Cause.fail("error"))
+```
+
+### Interruption
+
+Complete a promise with interruption:
+
+```scala
+val promise: Promise[Nothing, Nothing] = ???
+
+// Interrupt as current fiber
+val interrupted: UIO[Boolean] = promise.interrupt
+
+// Interrupt as specific fiber
+val interruptedAs: UIO[Boolean] = promise.interruptAs(fiberId)
+```
+
+### Die
+
+Complete a promise with a defect (unchecked exception):
+
+```scala
+val promise: Promise[Nothing, Nothing] = ???
+
+val died: UIO[Boolean] = promise.die(new RuntimeException("Fatal error"))
+```
+
+## Completing with Effects
+
+### Complete with Effect Result
+
+Complete a promise with the result of an effect:
+
+```scala
+val promise: Promise[E, A] = ???
+val effect: IO[E, A] = ???
+
+// Memoizes the effect result
+val completed: UIO[Boolean] = promise.complete(effect)
+```
+
+<Note>
+  `complete` will evaluate the effect once and memoize its result. All awaiting fibers will receive the same result.
+</Note>
+
+### Complete with Effect (Non-Memoized)
+
+Complete a promise with an effect that's re-evaluated on each `await`:
+
+```scala
+val promise: Promise[E, A] = ???
+val effect: IO[E, A] = ???
+
+// Effect is evaluated fresh for each await
+val completed: UIO[Boolean] = promise.completeWith(effect)
+```
+
+<Warning>
+  With `completeWith`, each fiber awaiting the promise will execute the effect independently, potentially producing different results or side effects.
+</Warning>
+
+### Complete with Exit
+
+Complete with an `Exit` value directly:
+
+```scala
+val promise: Promise[E, A] = ???
+val exit: Exit[E, A] = ???
+
+val completed: UIO[Boolean] = promise.done(exit)
+```
+
+## Awaiting Promises
+
+### Basic Await
+
+Suspend the current fiber until the promise is completed:
+
+```scala
+val promise: Promise[E, A] = ???
+
+val result: IO[E, A] = promise.await
+```
+
+<Note>
+  If the promise is completed with failure, `await` will fail. If completed with interruption, the current fiber will be interrupted.
+</Note>
+
+### Check Status
+
+Check if a promise is completed without blocking:
+
+```scala
+val promise: Promise[E, A] = ???
+
+// Check if done
+val isDone: UIO[Boolean] = promise.isDone
+
+// Get result if available
+val result: UIO[Option[IO[E, A]]] = promise.poll
+```
+
+## Coordination Patterns
+
+### Producer-Consumer
+
+```scala
+import zio._
+
+def producer(promise: Promise[Nothing, String]): UIO[Unit] =
+  for {
+    _      <- ZIO.sleep(1.second)
+    result <- expensiveComputation
+    _      <- promise.succeed(result)
+  } yield ()
+
+def consumer(promise: Promise[Nothing, String]): IO[Nothing, String] =
+  for {
+    _      <- ZIO.succeed(println("Waiting for result..."))
+    result <- promise.await
+    _      <- ZIO.succeed(println(s"Got result: $result"))
+  } yield result
+
+val program = for {
+  promise  <- Promise.make[Nothing, String]
+  _        <- producer(promise).fork
+  _        <- consumer(promise).fork
+  result   <- promise.await
+} yield result
+```
+
+### Barrier Synchronization
+
+Multiple fibers wait for a barrier to be released:
+
+```scala
+import zio._
+
+def worker(id: Int, barrier: Promise[Nothing, Unit]): UIO[String] =
+  for {
+    _      <- ZIO.succeed(println(s"Worker $id: preparing"))
+    _      <- ZIO.sleep(Random.nextIntBetween(100, 1000).millis)
+    _      <- ZIO.succeed(println(s"Worker $id: waiting at barrier"))
+    _      <- barrier.await
+    _      <- ZIO.succeed(println(s"Worker $id: proceeding"))
+  } yield s"Worker $id completed"
+
+val program = for {
+  barrier <- Promise.make[Nothing, Unit]
+  workers <- ZIO.foreach(1 to 5)(id => worker(id, barrier).fork)
+  _       <- ZIO.sleep(2.seconds)
+  _       <- ZIO.succeed(println("Releasing barrier!"))
+  _       <- barrier.succeed(())
+  results <- ZIO.foreach(workers)(_.join)
+} yield results
+```
+
+### One-Time Event
+
+```scala
+import zio._
+
+class StartupSignal {
+  val ready: UIO[Promise[Nothing, Unit]] = Promise.make[Nothing, Unit]
+  
+  def waitForStartup: UIO[Unit] = ready.flatMap(_.await)
+  
+  def signalReady: UIO[Unit] = ready.flatMap(_.succeed(()))
+}
+
+val program = for {
+  signal <- ZIO.succeed(new StartupSignal)
+  _      <- signal.signalReady.delay(2.seconds).fork
+  _      <- ZIO.succeed(println("Waiting for startup..."))
+  _      <- signal.waitForStartup
+  _      <- ZIO.succeed(println("System ready!"))
+} yield ()
+```
+
+## Racing with Promises
+
+Complete a promise with the first of multiple effects to complete:
+
+```scala
+import zio._
+
+def race[E, A](ios: List[IO[E, A]]): IO[E, A] =
+  for {
+    promise <- Promise.make[E, A]
+    _       <- ZIO.foreachDiscard(ios) { io =>
+                 io.flatMap(promise.complete).fork
+               }
+    result  <- promise.await
+  } yield result
+
+val program = race(List(
+  ZIO.succeed("First").delay(1.second),
+  ZIO.succeed("Second").delay(2.seconds),
+  ZIO.succeed("Third").delay(3.seconds)
+))
+// result = "First"
+```
+
+## Timeout Pattern
+
+```scala
+import zio._
+
+def withTimeout[E, A](effect: IO[E, A], duration: Duration): IO[E, Option[A]] =
+  for {
+    promise <- Promise.make[E, A]
+    _       <- effect.flatMap(promise.succeed).fork
+    _       <- promise.interrupt.delay(duration).fork
+    result  <- promise.await.asSome.catchSome {
+                 case _: InterruptedException => ZIO.none
+               }
+  } yield result
+```
+
+## Multiple Awaiting Fibers
+
+Multiple fibers can await the same promise:
+
+```scala
+import zio._
+
+val program = for {
+  promise <- Promise.make[Nothing, Int]
+  fiber1  <- promise.await.fork
+  fiber2  <- promise.await.fork
+  fiber3  <- promise.await.fork
+  _       <- promise.succeed(42)
+  _       <- fiber1.join // 42
+  _       <- fiber2.join // 42
+  _       <- fiber3.join // 42
+} yield ()
+```
+
+<Tip>
+  All fibers awaiting a promise will resume simultaneously when the promise is completed.
+</Tip>
+
+## Interruption Handling
+
+Fibers waiting on a promise can be interrupted:
+
+```scala
+import zio._
+
+val program = for {
+  promise <- Promise.make[Nothing, Int]
+  fiber   <- promise.await.fork
+  _       <- fiber.interrupt
+  // fiber is interrupted, promise is unaffected
+  _       <- promise.succeed(42)
+} yield ()
+```
+
+## Advanced: Unsafe Operations
+
+For performance-critical code, you can use unsafe operations:
+
+```scala
+import zio._
+import zio.Unsafe.unsafe
+
+val promise: Promise[E, A] = ???
+
+// Unsafe completion (doesn't wrap in ZIO)
+val completed: Boolean = promise.unsafe.succeed(value)(unsafe)
+
+// Check if done unsafely
+val isDone: Boolean = promise.unsafe.isDone(unsafe)
+
+// Poll unsafely
+val result: Option[IO[E, A]] = promise.unsafe.poll(unsafe)
+```
+
+<Warning>
+  Unsafe operations bypass ZIO's safety guarantees. Only use them when you understand the implications and have measured a performance benefit.
+</Warning>
+
+## Error Handling
+
+### Refail Without Stack Trace
+
+For re-failing with a cause without adding a new stack trace:
+
+```scala
+val promise: Promise[E, A] = ???
+val cause: Cause[E] = ???
+
+val refailed: UIO[Boolean] = promise.refailCause(cause)
+```
+
+## Best Practices
+
+<Card title="Single Assignment" icon="lock">
+  A Promise can only be completed once. Subsequent completion attempts return `false` but don't throw exceptions.
+</Card>
+
+<Card title="Resource Safety" icon="shield">
+  Promises are fully interruptible. When a fiber awaiting a promise is interrupted, it's safely cleaned up without resource leaks.
+</Card>
+
+<Card title="Use complete for Memoization" icon="memory">
+  Use `complete` when you want to memoize an effect result. Use `completeWith` when you want each awaiter to execute the effect independently.
+</Card>
+
+<Tip>
+  Promises are excellent for coordinating multiple fibers, but for simple value sharing, consider using `Ref` instead.
+</Tip>

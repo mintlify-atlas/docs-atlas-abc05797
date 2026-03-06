@@ -1,0 +1,550 @@
+---
+title: 'TQueue'
+description: 'Transactional queue for atomic enqueue and dequeue operations'
+---
+
+# TQueue
+
+`TQueue[A]` is a transactional queue that supports atomic enqueue and dequeue operations. It can be used as a bounded or unbounded queue with different overflow strategies.
+
+## Overview
+
+TQueue provides a thread-safe queue that participates in STM transactions. Unlike regular concurrent queues, TQueue operations can be composed with other STM operations into larger atomic transactions. TQueue supports automatic retry when the queue is full or empty.
+
+## Queue Strategies
+
+TQueue supports three overflow strategies:
+
+- **BackPressure**: Blocks (retries) when the queue is full until space becomes available
+- **Dropping**: Drops new values when the queue is full
+- **Sliding**: Drops old values when the queue is full to make room for new ones
+
+## Creating TQueue
+
+### bounded
+
+```scala
+def bounded[A](requestedCapacity: => Int): USTM[TQueue[A]]
+```
+
+Creates a bounded queue with back pressure strategy.
+
+```scala
+val createQueue: USTM[TQueue[Int]] = TQueue.bounded(100)
+```
+
+### unbounded
+
+```scala
+def unbounded[A]: USTM[TQueue[A]]
+```
+
+Creates an unbounded queue.
+
+```scala
+val createQueue: USTM[TQueue[String]] = TQueue.unbounded
+```
+
+### dropping
+
+```scala
+def dropping[A](requestedCapacity: => Int): USTM[TQueue[A]]
+```
+
+Creates a bounded queue that drops new values when full.
+
+```scala
+val createQueue: USTM[TQueue[Int]] = TQueue.dropping(50)
+```
+
+### sliding
+
+```scala
+def sliding[A](requestedCapacity: => Int): USTM[TQueue[A]]
+```
+
+Creates a bounded queue that drops old values when full.
+
+```scala
+val createQueue: USTM[TQueue[Int]] = TQueue.sliding(50)
+```
+
+## Enqueue Operations
+
+### offer
+
+```scala
+def offer(a: A): USTM[Boolean]
+```
+
+Offers a value to the queue. Returns `true` if successful, `false` if dropped (for dropping queues). Retries for back pressure queues when full.
+
+```scala
+val tx: USTM[Boolean] = for {
+  queue  <- TQueue.bounded[Int](10)
+  result <- queue.offer(42)
+} yield result // true if space available
+```
+
+### offerAll
+
+```scala
+def offerAll(as: Iterable[A]): USTM[Boolean]
+```
+
+Offers multiple values to the queue.
+
+```scala
+val tx: USTM[Boolean] = for {
+  queue  <- TQueue.bounded[Int](100)
+  result <- queue.offerAll(List(1, 2, 3, 4, 5))
+} yield result
+```
+
+## Dequeue Operations
+
+### take
+
+```scala
+val take: USTM[A]
+```
+
+Takes a value from the queue. Retries if the queue is empty.
+
+```scala
+val tx: USTM[Int] = for {
+  queue <- TQueue.bounded[Int](10)
+  _     <- queue.offer(42)
+  value <- queue.take
+} yield value // 42
+```
+
+### takeAll
+
+```scala
+val takeAll: USTM[Chunk[A]]
+```
+
+Takes all values currently in the queue.
+
+```scala
+val tx: USTM[Chunk[Int]] = for {
+  queue  <- TQueue.bounded[Int](10)
+  _      <- queue.offerAll(List(1, 2, 3, 4, 5))
+  values <- queue.takeAll
+} yield values // Chunk(1, 2, 3, 4, 5)
+```
+
+### takeUpTo
+
+```scala
+def takeUpTo(max: Int): USTM[Chunk[A]]
+```
+
+Takes up to `max` values from the queue.
+
+```scala
+val tx: USTM[Chunk[Int]] = for {
+  queue  <- TQueue.bounded[Int](10)
+  _      <- queue.offerAll(List(1, 2, 3, 4, 5))
+  values <- queue.takeUpTo(3)
+} yield values // Chunk(1, 2, 3)
+```
+
+## Peek Operations
+
+### peek
+
+```scala
+val peek: USTM[A]
+```
+
+Views the first element without removing it. Retries if empty.
+
+```scala
+val tx: USTM[Int] = for {
+  queue <- TQueue.bounded[Int](10)
+  _     <- queue.offer(42)
+  value <- queue.peek
+} yield value // 42, value remains in queue
+```
+
+### peekOption
+
+```scala
+val peekOption: USTM[Option[A]]
+```
+
+Views the first element if available, returns `None` if empty.
+
+```scala
+val tx: USTM[Option[Int]] = for {
+  queue <- TQueue.bounded[Int](10)
+  value <- queue.peekOption
+} yield value // None
+```
+
+### peekAll
+
+```scala
+val peekAll: USTM[Chunk[A]]
+```
+
+Views all elements without removing them.
+
+```scala
+val tx: USTM[Chunk[Int]] = for {
+  queue  <- TQueue.bounded[Int](10)
+  _      <- queue.offerAll(List(1, 2, 3))
+  values <- queue.peekAll
+} yield values // Chunk(1, 2, 3), all remain in queue
+```
+
+## Queue Status
+
+### size
+
+```scala
+val size: USTM[Int]
+```
+
+Returns the current number of elements in the queue.
+
+```scala
+val tx: USTM[Int] = for {
+  queue <- TQueue.bounded[Int](10)
+  _     <- queue.offerAll(List(1, 2, 3))
+  size  <- queue.size
+} yield size // 3
+```
+
+### isEmpty
+
+```scala
+val isEmpty: USTM[Boolean]
+```
+
+Checks if the queue is empty.
+
+```scala
+val tx: USTM[Boolean] = for {
+  queue <- TQueue.bounded[Int](10)
+  empty <- queue.isEmpty
+} yield empty // true
+```
+
+### isFull
+
+```scala
+val isFull: USTM[Boolean]
+```
+
+Checks if the queue is at capacity.
+
+```scala
+val tx: USTM[Boolean] = for {
+  queue <- TQueue.bounded[Int](3)
+  _     <- queue.offerAll(List(1, 2, 3))
+  full  <- queue.isFull
+} yield full // true
+```
+
+### capacity
+
+```scala
+val capacity: Int
+```
+
+Returns the maximum capacity of the queue.
+
+```scala
+val tx: USTM[Int] = for {
+  queue <- TQueue.bounded[Int](100)
+} yield queue.capacity // 100
+```
+
+## Shutdown Operations
+
+### shutdown
+
+```scala
+val shutdown: USTM[Unit]
+```
+
+Shuts down the queue. All pending and future operations will be interrupted.
+
+```scala
+val tx: USTM[Unit] = for {
+  queue <- TQueue.bounded[Int](10)
+  _     <- queue.shutdown
+} yield ()
+```
+
+### isShutdown
+
+```scala
+val isShutdown: USTM[Boolean]
+```
+
+Checks if the queue has been shut down.
+
+```scala
+val tx: USTM[Boolean] = for {
+  queue    <- TQueue.bounded[Int](10)
+  _        <- queue.shutdown
+  shutdown <- queue.isShutdown
+} yield shutdown // true
+```
+
+### awaitShutdown
+
+```scala
+val awaitShutdown: USTM[Unit]
+```
+
+Waits until the queue is shut down.
+
+```scala
+val tx: USTM[Unit] = for {
+  queue <- TQueue.bounded[Int](10)
+  _     <- queue.awaitShutdown // Retries until shutdown
+} yield ()
+```
+
+## Example: Producer-Consumer
+
+```scala
+import zio._
+import zio.stm._
+
+val program = for {
+  queue <- TQueue.bounded[Int](10).commit
+  
+  // Producer fiber
+  producer <- ZIO.foreach(1 to 20) { n =>
+                queue.offer(n).commit *>
+                Console.printLine(s"Produced: $n")
+              }.fork
+  
+  // Consumer fiber
+  consumer <- ZIO.foreach(1 to 20) { _ =>
+                queue.take.commit.flatMap { n =>
+                  Console.printLine(s"Consumed: $n")
+                }
+              }.fork
+  
+  _ <- producer.join
+  _ <- consumer.join
+} yield ()
+```
+
+## Example: Work Distribution
+
+```scala
+import zio._
+import zio.stm._
+
+case class Task(id: Int, work: String)
+
+val distributeWork = for {
+  queue <- TQueue.bounded[Task](100).commit
+  
+  // Submit tasks
+  _ <- ZIO.foreach(1 to 50) { i =>
+         queue.offer(Task(i, s"Work item $i")).commit
+       }
+  
+  // Multiple workers
+  workers <- ZIO.foreach(1 to 5) { workerId =>
+               ZIO.forever {
+                 queue.take.commit.flatMap { task =>
+                   Console.printLine(s"Worker $workerId processing ${task.id}") *>
+                   ZIO.sleep(100.millis) // Simulate work
+                 }
+               }.fork
+             }
+  
+  _ <- ZIO.collectAll(workers.map(_.join)).timeout(10.seconds)
+} yield ()
+```
+
+## Example: Bounded Buffer with Timeout
+
+```scala
+import zio._
+import zio.stm._
+
+class BoundedBuffer[A](queue: TQueue[A], timeout: Duration) {
+  
+  def put(a: A): IO[String, Unit] =
+    queue.offer(a).commit
+      .timeout(timeout)
+      .someOrFail("Timeout: queue full")
+      .unit
+  
+  def take: IO[String, A] =
+    queue.take.commit
+      .timeout(timeout)
+      .someOrFail("Timeout: queue empty")
+}
+
+object BoundedBuffer {
+  def make[A](capacity: Int, timeout: Duration): UIO[BoundedBuffer[A]] =
+    TQueue.bounded[A](capacity).commit.map(new BoundedBuffer(_, timeout))
+}
+```
+
+## Example: Priority Queue (using multiple TQueues)
+
+```scala
+import zio._
+import zio.stm._
+
+class PriorityQueue[A](
+  high: TQueue[A],
+  normal: TQueue[A],
+  low: TQueue[A]
+) {
+  
+  def offer(a: A, priority: Priority): UIO[Boolean] = {
+    val queue = priority match {
+      case Priority.High   => high
+      case Priority.Normal => normal
+      case Priority.Low    => low
+    }
+    queue.offer(a).commit
+  }
+  
+  def take: UIO[A] = (
+    high.take
+      .orElse(normal.take)
+      .orElse(low.take)
+  ).commit
+}
+
+enum Priority {
+  case High, Normal, Low
+}
+
+object PriorityQueue {
+  def make[A](capacity: Int): UIO[PriorityQueue[A]] = (
+    for {
+      high   <- TQueue.bounded[A](capacity)
+      normal <- TQueue.bounded[A](capacity)
+      low    <- TQueue.bounded[A](capacity)
+    } yield new PriorityQueue(high, normal, low)
+  ).commit
+}
+```
+
+## Example: Rate Limiting
+
+```scala
+import zio._
+import zio.stm._
+
+class RateLimiter(tokens: TQueue[Unit], refillRate: Duration) {
+  
+  def acquire: UIO[Unit] =
+    tokens.take.commit
+  
+  def withPermit[R, E, A](effect: ZIO[R, E, A]): ZIO[R, E, A] =
+    acquire *> effect
+  
+  // Background refill fiber
+  def startRefill: UIO[Fiber[Nothing, Nothing]] =
+    (tokens.offer(()).commit *> ZIO.sleep(refillRate))
+      .forever
+      .fork
+}
+
+object RateLimiter {
+  def make(maxTokens: Int, refillRate: Duration): UIO[RateLimiter] = for {
+    tokens <- TQueue.bounded[Unit](maxTokens).commit
+    _      <- ZIO.foreach(1 to maxTokens)(_ => tokens.offer(()).commit)
+    limiter = new RateLimiter(tokens, refillRate)
+    _      <- limiter.startRefill
+  } yield limiter
+}
+
+// Usage
+val program = for {
+  limiter <- RateLimiter.make(10, 1.second)
+  
+  // This will be rate limited to 10 requests per second
+  _ <- ZIO.foreach(1 to 100) { i =>
+         limiter.withPermit {
+           Console.printLine(s"Request $i")
+         }
+       }
+} yield ()
+```
+
+## Example: Fanout Pattern
+
+```scala
+import zio._
+import zio.stm._
+
+def fanout[A](
+  input: TQueue[A],
+  outputs: List[TQueue[A]]
+): UIO[Fiber[Nothing, Nothing]] = {
+  ZIO.forever {
+    for {
+      value <- input.take.commit
+      _     <- ZIO.foreachDiscard(outputs)(q => q.offer(value).commit)
+    } yield ()
+  }.fork
+}
+
+// Usage: One producer, multiple consumers
+val program = for {
+  input    <- TQueue.bounded[Int](10).commit
+  output1  <- TQueue.bounded[Int](10).commit
+  output2  <- TQueue.bounded[Int](10).commit
+  output3  <- TQueue.bounded[Int](10).commit
+  
+  _        <- fanout(input, List(output1, output2, output3))
+  
+  producer <- ZIO.foreach(1 to 20)(n => input.offer(n).commit).fork
+  
+  consumer1 <- ZIO.foreach(1 to 20)(_ => 
+                 output1.take.commit.flatMap(n => Console.printLine(s"C1: $n"))
+               ).fork
+  
+  consumer2 <- ZIO.foreach(1 to 20)(_ => 
+                 output2.take.commit.flatMap(n => Console.printLine(s"C2: $n"))
+               ).fork
+  
+  consumer3 <- ZIO.foreach(1 to 20)(_ => 
+                 output3.take.commit.flatMap(n => Console.printLine(s"C3: $n"))
+               ).fork
+  
+  _ <- ZIO.collectAll(List(producer, consumer1, consumer2, consumer3).map(_.join))
+} yield ()
+```
+
+## Best Practices
+
+1. **Choose the right strategy**: Use back pressure for critical data, dropping/sliding for non-critical
+2. **Size appropriately**: Bounded queues prevent memory issues in production
+3. **Handle shutdown gracefully**: Use `awaitShutdown` and `isShutdown` for clean teardown
+4. **Compose with other STM types**: TQueue works well with TRef, TMap for complex coordination
+5. **Use `takeAll` for batching**: More efficient than taking one at a time
+6. **Consider capacity**: Powers of 2 provide best performance for bounded queues
+
+## Performance Considerations
+
+- Bounded queues with powers-of-2 capacities perform best
+- `takeAll` and `offerAll` are more efficient than individual operations
+- High contention can cause transaction retries - consider multiple queues
+- Unbounded queues can grow without limit - use with caution in production
+
+## See Also
+
+- [TRef](/api/tref) - Transactional references
+- [TArray](/api/tarray) - Transactional arrays
+- [TMap](/api/tmap) - Transactional maps
+- [ZSTM](/api/zstm) - Core STM effect type
+- [TSemaphore](/api/tsemaphore) - Transactional semaphores

@@ -1,0 +1,272 @@
+---
+title: "Schedule"
+description: "Master retry policies, repetition strategies, and sophisticated scheduling patterns in ZIO"
+---
+
+# Schedule
+
+A `Schedule[Env, In, Out]` defines a recurring schedule that consumes values of type `In` and returns values of type `Out`. Schedules are the foundation of retry and repeat logic in ZIO, providing powerful combinators for building sophisticated timing strategies.
+
+## Overview
+
+Schedules are defined as a possibly infinite set of intervals spread out over time. Each interval defines a window in which recurrence is possible. When schedules are used to repeat or retry effects, the starting boundary of each interval determines when the effect will be executed again.
+
+<Note>
+Schedules compose in three primary ways: **union** (combines intervals), **intersection** (narrows intervals), and **sequence** (concatenates intervals).
+</Note>
+
+## Core Concepts
+
+### Basic Schedules
+
+ZIO provides several built-in schedules for common patterns:
+
+```scala
+import zio._
+import zio.Schedule._
+
+// Recurs forever
+val forever: Schedule[Any, Any, Long] = 
+  Schedule.forever
+
+// Recurs exactly 5 times
+val recurs5: Schedule[Any, Any, Long] = 
+  Schedule.recurs(5)
+
+// Exponential backoff
+val exponential: Schedule[Any, Any, Duration] = 
+  Schedule.exponential(100.millis)
+
+// Fixed interval
+val fixed: Schedule[Any, Any, Long] = 
+  Schedule.fixed(1.second)
+```
+
+### Retry Policies
+
+Schedules are commonly used to implement retry logic with sophisticated backoff strategies:
+
+```scala
+val retryPolicy = 
+  (Schedule.exponential(10.millis) || Schedule.recurs(5))
+    .jittered // Add random jitter
+    .tapOutput(duration => 
+      Console.printLine(s"Retrying in ${duration}")
+    )
+
+val result = riskyOperation.retry(retryPolicy)
+```
+
+<Tip>
+Use `jittered` to add randomness to retry delays. This prevents thundering herd problems when multiple processes retry simultaneously.
+</Tip>
+
+### Repeat Strategies
+
+Schedules can also control repetition of successful operations:
+
+```scala
+// Repeat every 30 seconds, up to 100 times
+val repeatPolicy = 
+  Schedule.fixed(30.seconds) && Schedule.recurs(100)
+
+val repeated = healthCheck.repeat(repeatPolicy)
+```
+
+## Composition
+
+### Union (`||`)
+
+The union of two schedules continues as long as **either** schedule wants to continue:
+
+```scala
+// Retry up to 10 times OR for up to 1 minute
+val retryUnion = 
+  Schedule.recurs(10) || Schedule.upTo(1.minute)
+```
+
+### Intersection (`&&`)
+
+The intersection continues only while **both** schedules want to continue:
+
+```scala
+// Retry with exponential backoff, but at most 10 times
+val retryIntersection = 
+  Schedule.exponential(100.millis) && Schedule.recurs(10)
+```
+
+### Sequence (`++`)
+
+Sequence concatenates schedules, running the second after the first completes:
+
+```scala
+// Fast retries first, then slower retries
+val retrySequence = 
+  Schedule.recurs(3).delayed(_ => 100.millis) ++
+  Schedule.recurs(5).delayed(_ => 1.second)
+```
+
+## Advanced Patterns
+
+### Exponential Backoff with Jitter
+
+The recommended pattern for retries with external services:
+
+```scala
+val backoff = Schedule
+  .exponential(base = 10.millis, factor = 2.0)
+  .jittered(0.0, 1.0) // Full jitter
+  .upTo(30.seconds)   // Cap maximum delay
+  && Schedule.recurs(10) // Limit attempts
+```
+
+### Fibonacci Backoff
+
+For gradual backoff that's less aggressive than exponential:
+
+```scala
+val fibonacci = Schedule
+  .fibonacci(100.millis)
+  .upTo(1.minute)
+```
+
+### Conditional Schedules
+
+Schedules can inspect inputs and outputs to make decisions:
+
+```scala
+// Retry only on specific errors
+val retryOnTimeout = Schedule
+  .exponential(100.millis)
+  .whileInput[TimeoutException](_ => true)
+
+// Stop when a condition is met
+val untilComplete = Schedule
+  .fixed(1.second)
+  .untilOutput[Status](_.isComplete)
+```
+
+### Collecting Results
+
+Schedules can accumulate results over iterations:
+
+```scala
+val collectAll = Schedule
+  .fixed(1.second)
+  .collectAll[Result]
+
+val (results, _) = effect
+  .repeat(collectAll)
+  .run
+// results: Chunk[Result]
+```
+
+## Practical Examples
+
+### Database Retry with Circuit Breaker
+
+```scala
+import zio._
+
+case class CircuitBreakerState(
+  failures: Int,
+  lastFailure: Option[Instant]
+)
+
+def dbRetryPolicy = Schedule
+  .exponential(100.millis)
+  .whileOutput[CircuitBreakerState] { state =>
+    state.failures < 5 && 
+    state.lastFailure.forall { last =>
+      Instant.now().isAfter(last.plusSeconds(60))
+    }
+  }
+```
+
+### Rate-Limited API Calls
+
+```scala
+// Call API every 100ms, but no more than 100 times
+val rateLimited = Schedule
+  .fixed(100.millis)
+  && Schedule.recurs(100)
+
+val apiCalls = ZIO
+  .foreach(requests) { req =>
+    callAPI(req)
+  }
+  .repeat(rateLimited)
+```
+
+### Polling with Timeout
+
+```scala
+val pollSchedule = Schedule
+  .fixed(5.seconds)           // Check every 5 seconds
+  .untilOutput[Status](_.isDone) // Until complete
+  && Schedule.upTo(5.minutes)    // With overall timeout
+
+val polled = checkStatus.repeat(pollSchedule)
+```
+
+## Schedule Combinators
+
+### Transforming Outputs
+
+```scala
+val schedule = Schedule
+  .exponential(100.millis)
+  .map(duration => s"Waiting ${duration}")
+  .tapOutput(msg => Console.printLine(msg))
+```
+
+### Modifying Delays
+
+```scala
+val modified = Schedule
+  .exponential(100.millis)
+  .modifyDelay((out, delay) => 
+    if (delay > 10.seconds) 10.seconds else delay
+  )
+```
+
+### Folding State
+
+```scala
+val counting = Schedule
+  .forever
+  .fold(0)((count, _) => count + 1)
+```
+
+## Best Practices
+
+<CardGroup cols={2}>
+  <Card title="Use Jitter" icon="shuffle">
+    Add jitter to exponential backoff to avoid thundering herd problems.
+  </Card>
+  
+  <Card title="Cap Delays" icon="clock">
+    Use `upTo` to prevent infinite exponential growth of delays.
+  </Card>
+  
+  <Card title="Limit Attempts" icon="repeat">
+    Combine unlimited schedules with `recurs` to bound retry attempts.
+  </Card>
+  
+  <Card title="Log Decisions" icon="terminal">
+    Use `tapOutput` to log retry/repeat behavior for debugging.
+  </Card>
+</CardGroup>
+
+## Performance Considerations
+
+- **Fixed schedules** use constant memory regardless of iterations
+- **Collecting schedules** accumulate state - use with bounded iterations
+- **Jittered schedules** add minimal overhead for randomization
+- Schedules are evaluated lazily and don't allocate until used
+
+## See Also
+
+- [Error Handling](/core-concepts/error-handling) - Using schedules with retry
+- [Testing](/testing/test-aspects) - Testing scheduled effects
+- API Reference: `Schedule.scala:54`

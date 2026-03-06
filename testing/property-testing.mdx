@@ -1,0 +1,623 @@
+---
+title: Property-Based Testing  
+description: Generate test cases automatically with ZIO Test generators
+---
+
+Property-based testing is a powerful technique where you specify properties that should hold for all inputs, and the testing framework automatically generates test cases. ZIO Test provides a rich library of generators and combinators.
+
+## What is Property-Based Testing?
+
+Instead of writing individual test cases with specific inputs:
+
+```scala
+test("addition is commutative - examples") {
+  assertTrue(
+    1 + 2 == 2 + 1,
+    5 + 3 == 3 + 5,
+    10 + 20 == 20 + 10
+  )
+}
+```
+
+You specify properties that should hold for all inputs:
+
+```scala
+test("addition is commutative - property") {
+  check(Gen.int, Gen.int) { (a, b) =>
+    assertTrue(a + b == b + a)
+  }
+}
+```
+
+The test framework generates many random inputs and verifies the property holds.
+
+## Basic Property Testing
+
+### The check Function
+
+```scala
+import zio.test._
+
+test("string reverse is involutive") {
+  check(Gen.string) { s =>
+    assertTrue(s.reverse.reverse == s)
+  }
+}
+```
+
+### Multiple Generators
+
+```scala
+test("list concatenation length") {
+  check(Gen.listOf(Gen.int), Gen.listOf(Gen.int)) { (list1, list2) =>
+    val concatenated = list1 ++ list2
+    assertTrue(concatenated.length == list1.length + list2.length)
+  }
+}
+```
+
+### With checkN
+
+Control the number of test cases:
+
+```scala
+test("extensive testing") {
+  checkN(1000)(Gen.int) { n =>
+    assertTrue(n + 0 == n)
+  }
+}
+```
+
+## Built-in Generators
+
+### Primitive Types
+
+<CodeGroup>
+```scala Numbers
+Gen.int              // All integers
+Gen.int(0, 100)      // Range [0, 100]
+Gen.long             // All longs
+Gen.long(0L, 1000L)  // Long range
+Gen.double           // All doubles
+Gen.double(0.0, 1.0) // Double range
+Gen.byte             // All bytes
+Gen.short            // All shorts
+```
+
+```scala Booleans
+Gen.boolean          // true or false
+```
+
+```scala Characters
+Gen.char             // Any character
+Gen.alphaChar        // a-z, A-Z
+Gen.alphaNumericChar // a-z, A-Z, 0-9
+Gen.numericChar      // 0-9
+Gen.printableChar    // Printable ASCII
+Gen.asciiChar        // ASCII characters
+Gen.unicodeChar      // Unicode characters
+```
+</CodeGroup>
+
+### Strings
+
+```scala
+Gen.string                    // Any string
+Gen.string(Gen.alphaChar)     // Alphabetic strings
+Gen.string1(Gen.alphaChar)    // Non-empty strings
+Gen.alphaNumericString        // Alphanumeric strings
+Gen.stringBounded(5, 10)(Gen.alphaChar)  // Length 5-10
+Gen.stringN(10)(Gen.alphaChar)           // Exactly length 10
+```
+
+### Collections
+
+<Tabs>
+  <Tab title="Lists">
+    ```scala
+    Gen.listOf(Gen.int)              // Any length
+    Gen.listOf1(Gen.int)             // Non-empty
+    Gen.listOfN(10)(Gen.int)         // Exactly 10 elements
+    Gen.listOfBounded(5, 15)(Gen.int) // 5-15 elements
+    ```
+  </Tab>
+  <Tab title="Vectors">
+    ```scala
+    Gen.vectorOf(Gen.int)
+    Gen.vectorOf1(Gen.int)
+    Gen.vectorOfN(10)(Gen.int)
+    Gen.vectorOfBounded(5, 15)(Gen.int)
+    ```
+  </Tab>
+  <Tab title="Sets">
+    ```scala
+    Gen.setOf(Gen.int)
+    Gen.setOf1(Gen.int)  // Non-empty
+    Gen.setOfN(10)(Gen.int)
+    Gen.setOfBounded(5, 15)(Gen.int)
+    ```
+  </Tab>
+  <Tab title="Maps">
+    ```scala
+    Gen.mapOf(Gen.int, Gen.string)
+    Gen.mapOf1(Gen.int, Gen.string)  // Non-empty
+    Gen.mapOfN(10)(Gen.int, Gen.string)
+    Gen.mapOfBounded(5, 15)(Gen.int, Gen.string)
+    ```
+  </Tab>
+</Tabs>
+
+### Chunks
+
+```scala
+Gen.chunkOf(Gen.int)
+Gen.chunkOf1(Gen.int)  // Non-empty
+Gen.chunkOfN(10)(Gen.int)
+Gen.chunkOfBounded(5, 15)(Gen.int)
+```
+
+### Options and Either
+
+```scala
+// Options
+Gen.option(Gen.int)      // Some or None
+Gen.some(Gen.int)        // Always Some
+Gen.none                 // Always None
+
+// Either  
+Gen.either(Gen.string, Gen.int)  // Left or Right
+```
+
+### Special Generators
+
+```scala
+Gen.uuid                          // Random UUIDs
+Gen.currency                      // Currency instances
+Gen.throwable                     // Throwables
+Gen.bigDecimal(0, 1000)          // BigDecimal
+Gen.bigInt(0, 1000000)           // BigInt
+```
+
+## Generator Combinators
+
+### map
+
+Transform generated values:
+
+```scala
+val evenInts: Gen[Any, Int] = 
+  Gen.int.map(_ * 2)
+
+val uppercaseStrings: Gen[Any, String] =
+  Gen.string.map(_.toUpperCase)
+```
+
+### flatMap
+
+Chain generators together:
+
+```scala
+val userGen: Gen[Any, User] = for {
+  name <- Gen.string(Gen.alphaChar)
+  age  <- Gen.int(18, 100)
+  email <- Gen.string(Gen.alphaNumericChar).map(_ + "@example.com")
+} yield User(name, age, email)
+```
+
+### filter
+
+Filter generated values:
+
+```scala
+val positiveInts: Gen[Any, Int] =
+  Gen.int.filter(_ > 0)
+
+val shortStrings: Gen[Any, String] =
+  Gen.string.filter(_.length < 10)
+```
+
+<Warning>
+  Using `filter` can reduce test performance. Prefer `map` when possible:
+  ```scala
+  // Prefer this
+  val evens = Gen.int.map(_ * 2)
+  
+  // Over this
+  val evens = Gen.int.filter(_ % 2 == 0)
+  ```
+</Warning>
+
+### collect
+
+Filter and transform with partial functions:
+
+```scala
+val successfulParses: Gen[Any, Int] =
+  Gen.string.collect {
+    case s if s.matches("\\d+") => s.toInt
+  }
+```
+
+### zip
+
+Combine multiple generators:
+
+```scala
+val coordinates: Gen[Any, (Int, Int)] =
+  Gen.int.zip(Gen.int)
+
+val user: Gen[Any, (String, Int, String)] =
+  Gen.string.zip(Gen.int).zip(Gen.string)
+```
+
+## Sized Generators
+
+Many generators respect a size parameter:
+
+```scala
+test("sized generation") {
+  check(Gen.listOf(Gen.int)) { list =>
+    // List size is influenced by the size parameter
+    assertTrue(list.length <= 100)  // Default size
+  }
+} @@ TestAspect.size(200)  // Increase size parameter
+```
+
+### Size Control
+
+```scala
+// Small sizes (exponential distribution)
+Gen.small(n => Gen.listOfN(n)(Gen.int))
+
+// Medium sizes (balanced distribution)  
+Gen.medium(n => Gen.listOfN(n)(Gen.int))
+
+// Large sizes (uniform distribution)
+Gen.large(n => Gen.listOfN(n)(Gen.int))
+
+// Custom size
+Gen.sized { size =>
+  Gen.listOfN(size)(Gen.int)
+}
+```
+
+## Generator Patterns
+
+### Constant Values
+
+```scala
+val alwaysFive: Gen[Any, Int] =
+  Gen.const(5)
+
+val alwaysAlice: Gen[Any, String] =
+  Gen.const("Alice")
+```
+
+### Choose from Elements
+
+```scala
+val primaryColors: Gen[Any, String] =
+  Gen.elements("red", "blue", "yellow")
+
+val diceRoll: Gen[Any, Int] =
+  Gen.elements(1, 2, 3, 4, 5, 6)
+```
+
+### Weighted Choice
+
+```scala
+val booleanBiased: Gen[Any, Boolean] =
+  Gen.weighted(
+    Gen.const(true)  -> 9,  // 90% true
+    Gen.const(false) -> 1   // 10% false
+  )
+
+val severityLevel: Gen[Any, String] =
+  Gen.weighted(
+    Gen.const("info")     -> 70,
+    Gen.const("warning")  -> 20,
+    Gen.const("error")    -> 9,
+    Gen.const("critical") -> 1
+  )
+```
+
+### One Of
+
+Choose from multiple generators:
+
+```scala
+val numberOrString: Gen[Any, Any] =
+  Gen.oneOf(
+    Gen.int,
+    Gen.string
+  )
+
+val positiveOrNegative: Gen[Any, Int] =
+  Gen.oneOf(
+    Gen.int(1, 100),
+    Gen.int(-100, -1)
+  )
+```
+
+## Recursive Generators
+
+Generate recursive data structures:
+
+```scala
+sealed trait Tree
+case class Leaf(value: Int) extends Tree
+case class Branch(left: Tree, right: Tree) extends Tree
+
+def treeGen(depth: Int): Gen[Any, Tree] =
+  if (depth == 0)
+    Gen.int.map(Leaf(_))
+  else
+    Gen.oneOf(
+      Gen.int.map(Leaf(_)),
+      for {
+        left  <- treeGen(depth - 1)
+        right <- treeGen(depth - 1)
+      } yield Branch(left, right)
+    )
+
+val smallTree: Gen[Any, Tree] = treeGen(3)
+```
+
+Or use `Gen.suspend` for mutual recursion:
+
+```scala
+lazy val treeGen: Gen[Any, Tree] = Gen.suspend {
+  Gen.oneOf(
+    Gen.int.map(Leaf(_)),
+    treeGen.zip(treeGen).map { case (l, r) => Branch(l, r) }
+  )
+}
+```
+
+## Custom Generators
+
+### From Scratch
+
+```scala
+case class Email(value: String)
+
+val emailGen: Gen[Any, Email] = for {
+  name   <- Gen.stringBounded(5, 10)(Gen.alphaChar)
+  domain <- Gen.elements("gmail.com", "yahoo.com", "example.com")
+} yield Email(s"$name@$domain")
+```
+
+### With ZIO Effects
+
+```scala
+val randomUserGen: Gen[Any, User] = Gen.fromZIO {
+  for {
+    id <- Random.nextInt
+    timestamp <- Clock.instant
+  } yield User(id, timestamp)
+}
+```
+
+### From Random
+
+```scala
+val customGen: Gen[Any, Int] = Gen.fromRandom { random =>
+  random.nextIntBounded(100)
+}
+```
+
+## Shrinking
+
+When a property fails, ZIO Test tries to find the smallest failing example:
+
+```scala
+test("all integers are positive") {
+  check(Gen.int) { n =>
+    assertTrue(n > 0)
+  }
+}
+// Failure: 0 did not satisfy (0 > 0)
+// Shrunk from some larger value to the smallest failing case: 0
+```
+
+### Control Shrinking
+
+```scala
+// Disable shrinking
+test("no shrinking") {
+  check(Gen.int.noShrink) { n =>
+    assertTrue(n > 0)
+  }
+}
+
+// Custom shrinking
+val customShrink: Gen[Any, MyType] =
+  Gen.int.map(MyType.apply).reshrink { myType =>
+    Sample.shrinkIntegral(0)(myType.value).map(MyType.apply)
+  }
+```
+
+## Advanced Patterns
+
+### Dependent Generators
+
+```scala
+val nonEmptyListWithIndex: Gen[Any, (List[Int], Int)] = for {
+  list <- Gen.listOf1(Gen.int)
+  index <- Gen.int(0, list.length - 1)
+} yield (list, index)
+```
+
+### Constrained Generation
+
+```scala
+val validTriangle: Gen[Any, (Int, Int, Int)] = for {
+  a <- Gen.int(1, 100)
+  b <- Gen.int(1, 100)
+  c <- Gen.int((a - b).abs + 1, a + b - 1)
+} yield (a, b, c)
+```
+
+### Unfold Pattern
+
+```scala
+val fibonacciGen: Gen[Any, List[Int]] =
+  Gen.unfoldGen((0, 1)) { case (a, b) =>
+    Gen.const((b, a + b) -> a)
+  }
+```
+
+## Testing Effectful Code
+
+```scala
+test("user service properties") {
+  check(Gen.string, Gen.int) { (name, age) =>
+    for {
+      user    <- UserService.create(name, age)
+      fetched <- UserService.get(user.id)
+    } yield assertTrue(
+      fetched.name == name,
+      fetched.age == age
+    )
+  }
+}
+```
+
+## Common Properties
+
+### Commutativity
+
+```scala
+test("addition is commutative") {
+  check(Gen.int, Gen.int) { (a, b) =>
+    assertTrue(a + b == b + a)
+  }
+}
+```
+
+### Associativity
+
+```scala
+test("addition is associative") {
+  check(Gen.int, Gen.int, Gen.int) { (a, b, c) =>
+    assertTrue((a + b) + c == a + (b + c))
+  }
+}
+```
+
+### Identity
+
+```scala
+test("zero is additive identity") {
+  check(Gen.int) { n =>
+    assertTrue(n + 0 == n && 0 + n == n)
+  }
+}
+```
+
+### Inverse
+
+```scala
+test("negation is additive inverse") {
+  check(Gen.int) { n =>
+    assertTrue(n + (-n) == 0)
+  }
+}
+```
+
+### Idempotence
+
+```scala
+test("list deduplication is idempotent") {
+  check(Gen.listOf(Gen.int)) { list =>
+    val deduped = list.distinct
+    assertTrue(deduped.distinct == deduped)
+  }
+}
+```
+
+### Involution
+
+```scala
+test("reverse is involutive") {
+  check(Gen.listOf(Gen.int)) { list =>
+    assertTrue(list.reverse.reverse == list)
+  }
+}
+```
+
+## Performance Tips
+
+<AccordionGroup>
+  <Accordion title="Use map instead of filter">
+    Filter can reject many values, slowing tests:
+    ```scala
+    // Slow
+    Gen.int.filter(_ % 2 == 0)
+    
+    // Fast
+    Gen.int.map(_ * 2)
+    ```
+  </Accordion>
+
+  <Accordion title="Control sample count">
+    Adjust samples based on property complexity:
+    ```scala
+    // Simple properties: fewer samples
+    test("simple") {
+      check(Gen.int) { n => /* ... */ }
+    } @@ TestAspect.samples(100)
+    
+    // Complex properties: more samples
+    test("complex") {
+      check(Gen.int) { n => /* ... */ }
+    } @@ TestAspect.samples(10000)
+    ```
+  </Accordion>
+
+  <Accordion title="Use sized generators appropriately">
+    Don't generate unnecessarily large structures:
+    ```scala
+    // May generate huge lists
+    Gen.listOf(Gen.int)
+    
+    // Bounded size
+    Gen.listOfBounded(0, 100)(Gen.int)
+    ```
+  </Accordion>
+</AccordionGroup>
+
+## Best Practices
+
+<CardGroup cols={2}>
+  <Card title="Think in Properties" icon="lightbulb">
+    Focus on properties that should always hold, not specific examples.
+  </Card>
+  <Card title="Test Edge Cases" icon="triangle-exclamation">
+    Explicitly test boundary conditions with `elements`:
+    ```scala
+    Gen.oneOf(
+      Gen.int,
+      Gen.elements(0, Int.MinValue, Int.MaxValue)
+    )
+    ```
+  </Card>
+  <Card title="Keep Properties Simple" icon="circle-check">
+    Test one property at a time for clearer failures.
+  </Card>
+  <Card title="Use Domain Generators" icon="puzzle-piece">
+    Create reusable generators for domain types:
+    ```scala
+    object Generators {
+      val userGen = /* ... */
+      val orderGen = /* ... */
+    }
+    ```
+  </Card>
+</CardGroup>
+
+## See Also
+
+- [Testing Overview](/testing/overview) - Introduction to ZIO Test
+- [Assertions](/testing/assertions) - Express test conditions
+- [Test Aspects](/testing/test-aspects) - Modify test behavior

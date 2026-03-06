@@ -1,0 +1,451 @@
+---
+title: 'ConcurrentSet'
+description: 'Thread-safe concurrent set implementation'
+icon: 'list-check'
+---
+
+## Overview
+
+`ConcurrentSet[A]` is a thread-safe concurrent set implementation that wraps `java.util.concurrent.ConcurrentHashMap.KeySetView`. It provides a functional API for concurrent set operations with ZIO effects.
+
+## Creating a ConcurrentSet
+
+### empty
+
+Creates an empty `ConcurrentSet`.
+
+```scala
+def empty[A]: UIO[ConcurrentSet[A]]
+def empty[A](initialCapacity: Int): UIO[ConcurrentSet[A]]
+```
+
+**Example:**
+
+```scala
+import zio._
+import zio.concurrent._
+
+val program = for {
+  set <- ConcurrentSet.empty[String]
+  _   <- set.add("element")
+} yield ()
+```
+
+### make
+
+Creates a new `ConcurrentSet` initialized with the provided elements.
+
+```scala
+def make[A](as: A*): UIO[ConcurrentSet[A]]
+```
+
+**Example:**
+
+```scala
+val program = for {
+  set <- ConcurrentSet.make(1, 2, 3)
+  contains <- set.contains(2)
+} yield contains // true
+```
+
+### fromIterable
+
+Creates a new `ConcurrentSet` initialized with the provided collection.
+
+```scala
+def fromIterable[A](as: Iterable[A]): UIO[ConcurrentSet[A]]
+```
+
+**Example:**
+
+```scala
+val elements = List("a", "b", "c")
+val program = for {
+  set <- ConcurrentSet.fromIterable(elements)
+  size <- set.size
+} yield size // 3
+```
+
+## Basic Operations
+
+### add
+
+Adds a new value to the set. Returns true if the element was added (not already present).
+
+```scala
+def add(x: A): UIO[Boolean]
+```
+
+**Example:**
+
+```scala
+for {
+  set <- ConcurrentSet.empty[String]
+  added1 <- set.add("element")
+  added2 <- set.add("element")
+} yield (added1, added2) // (true, false)
+```
+
+### addAll
+
+Adds all new values to the set.
+
+```scala
+def addAll(xs: Iterable[A]): UIO[Boolean]
+```
+
+**Example:**
+
+```scala
+for {
+  set <- ConcurrentSet.empty[Int]
+  added <- set.addAll(List(1, 2, 3))
+  size <- set.size
+} yield (added, size) // (true, 3)
+```
+
+### remove
+
+Removes the entry for the given value if it exists. Returns true if the element was removed.
+
+```scala
+def remove(x: A): UIO[Boolean]
+```
+
+**Example:**
+
+```scala
+for {
+  set <- ConcurrentSet.make("a", "b", "c")
+  removed <- set.remove("b")
+  contains <- set.contains("b")
+} yield (removed, contains) // (true, false)
+```
+
+### removeAll
+
+Removes all the entries for the given values if they are mapped to existing elements.
+
+```scala
+def removeAll(xs: Iterable[A]): UIO[Boolean]
+```
+
+### retainAll
+
+Retains only the entries for the given values if they are mapped to existing elements.
+
+```scala
+def retainAll(xs: Iterable[A]): UIO[Boolean]
+```
+
+**Example:**
+
+```scala
+for {
+  set <- ConcurrentSet.make(1, 2, 3, 4, 5)
+  _   <- set.retainAll(List(2, 4))
+  result <- set.toSet
+} yield result // Set(2, 4)
+```
+
+### clear
+
+Removes all elements from the set.
+
+```scala
+def clear: UIO[Unit]
+```
+
+## Query Operations
+
+### contains
+
+Tests whether the element is in the set.
+
+```scala
+def contains(x: A): UIO[Boolean]
+```
+
+**Example:**
+
+```scala
+for {
+  set <- ConcurrentSet.make("apple", "banana", "orange")
+  hasApple <- set.contains("apple")
+  hasGrape <- set.contains("grape")
+} yield (hasApple, hasGrape) // (true, false)
+```
+
+### containsAll
+
+Tests if the elements in the collection are a subset of the set.
+
+```scala
+def containsAll(xs: Iterable[A]): UIO[Boolean]
+```
+
+**Example:**
+
+```scala
+for {
+  set <- ConcurrentSet.make(1, 2, 3, 4, 5)
+  hasSubset <- set.containsAll(List(2, 3, 4))
+} yield hasSubset // true
+```
+
+### isEmpty
+
+Returns true if there are no elements in the set.
+
+```scala
+def isEmpty: UIO[Boolean]
+```
+
+### size
+
+Returns the number of elements in the set.
+
+```scala
+def size: UIO[Int]
+```
+
+**Example:**
+
+```scala
+for {
+  set <- ConcurrentSet.make(1, 2, 3)
+  s   <- set.size
+  _   <- set.add(4)
+  s2  <- set.size
+} yield (s, s2) // (3, 4)
+```
+
+### exists
+
+Tests whether a given predicate holds true for at least one element in the set.
+
+```scala
+def exists(p: A => Boolean): UIO[Boolean]
+```
+
+**Example:**
+
+```scala
+for {
+  set <- ConcurrentSet.make(1, 2, 3, 4, 5)
+  hasEven <- set.exists(_ % 2 == 0)
+} yield hasEven // true
+```
+
+### forall
+
+Tests whether a predicate is satisfied by all elements of a set.
+
+```scala
+def forall(p: A => Boolean): UIO[Boolean]
+```
+
+**Example:**
+
+```scala
+for {
+  set <- ConcurrentSet.make(2, 4, 6, 8)
+  allEven <- set.forall(_ % 2 == 0)
+} yield allEven // true
+```
+
+### find
+
+Retrieves the first element for which the predicate is satisfied.
+
+```scala
+def find(p: A => Boolean): UIO[Option[A]]
+```
+
+**Example:**
+
+```scala
+for {
+  set <- ConcurrentSet.make(1, 2, 3, 4, 5)
+  result <- set.find(_ > 3)
+} yield result // Some(4) or Some(5)
+```
+
+### collectFirst
+
+Finds the first element of a set for which the partial function is defined and applies the function to it.
+
+```scala
+def collectFirst[B](pf: PartialFunction[A, B]): UIO[Option[B]]
+```
+
+**Example:**
+
+```scala
+for {
+  set <- ConcurrentSet.make(1, 2, 3, 4, 5)
+  result <- set.collectFirst {
+    case x if x > 3 => x * 10
+  }
+} yield result // Some(40) or Some(50)
+```
+
+## Filtering Operations
+
+### removeIf
+
+Removes all elements which satisfy the given predicate.
+
+```scala
+def removeIf(p: A => Boolean): UIO[Boolean]
+```
+
+**Example:**
+
+```scala
+for {
+  set <- ConcurrentSet.make(1, 2, 3, 4, 5)
+  _   <- set.removeIf(_ % 2 == 0)
+  remaining <- set.toSet
+} yield remaining // Set(1, 3, 5)
+```
+
+### retainIf
+
+Removes all elements which do not satisfy the given predicate.
+
+```scala
+def retainIf(p: A => Boolean): UIO[Boolean]
+```
+
+**Example:**
+
+```scala
+for {
+  set <- ConcurrentSet.make(1, 2, 3, 4, 5)
+  _   <- set.retainIf(_ > 2)
+  remaining <- set.toSet
+} yield remaining // Set(3, 4, 5)
+```
+
+## Aggregate Operations
+
+### fold
+
+Folds the elements of a set using the given binary operator.
+
+```scala
+def fold[S](zero: S)(f: (S, A) => S): UIO[S]
+```
+
+**Example:**
+
+```scala
+for {
+  set <- ConcurrentSet.make(1, 2, 3, 4, 5)
+  sum <- set.fold(0)(_ + _)
+} yield sum // 15
+```
+
+## Transformation Operations
+
+### transform
+
+Transforms all elements of the ConcurrentSet using the given function.
+
+```scala
+def transform(f: A => A): UIO[Unit]
+```
+
+**Example:**
+
+```scala
+for {
+  set <- ConcurrentSet.make(1, 2, 3)
+  _   <- set.transform(_ * 2)
+  result <- set.toSet
+} yield result // Set(2, 4, 6)
+```
+
+## Conversion Operations
+
+### toSet
+
+Converts the ConcurrentSet to a standard Scala Set.
+
+```scala
+def toSet: UIO[Set[A]]
+```
+
+**Example:**
+
+```scala
+for {
+  cset <- ConcurrentSet.make("a", "b", "c")
+  set  <- cset.toSet
+} yield set // Set("a", "b", "c")
+```
+
+## Use Cases
+
+### Tracking Unique Items
+
+```scala
+for {
+  visited <- ConcurrentSet.empty[String]
+  _ <- ZIO.foreachPar(urls) { url =>
+    visited.add(url).flatMap { isNew =>
+      if (isNew) processUrl(url)
+      else ZIO.unit
+    }
+  }
+} yield ()
+```
+
+### De-duplication
+
+```scala
+def deduplicate[A](items: List[A]): UIO[List[A]] =
+  for {
+    seen <- ConcurrentSet.empty[A]
+    result <- ZIO.filter(items) { item =>
+      seen.add(item)
+    }
+  } yield result
+```
+
+### Active Sessions
+
+```scala
+class SessionManager {
+  private val activeSessions = ConcurrentSet.empty[String]
+  
+  def startSession(sessionId: String): UIO[Boolean] =
+    activeSessions.add(sessionId)
+  
+  def endSession(sessionId: String): UIO[Boolean] =
+    activeSessions.remove(sessionId)
+  
+  def isActive(sessionId: String): UIO[Boolean] =
+    activeSessions.contains(sessionId)
+  
+  def activeCount: UIO[Int] =
+    activeSessions.size
+}
+```
+
+## Thread Safety
+
+`ConcurrentSet` is thread-safe and can be safely accessed from multiple fibers concurrently. All operations are atomic and lock-free, making it suitable for high-performance concurrent applications.
+
+## Performance Considerations
+
+- The iteration order of elements is not guaranteed
+- Operations like `fold`, `exists`, and `forall` iterate over all elements and may see concurrent modifications
+- For best performance, specify an `initialCapacity` when creating large sets
+
+## See Also
+
+- [ConcurrentMap](/api/concurrent-map) - Thread-safe concurrent map
+- [Ref](/api/ref) - Atomic reference for single values
+- [TSet](/api/tset) - Transactional set using STM

@@ -1,0 +1,850 @@
+---
+title: "Gen"
+description: "API reference for ZIO Test Gen - powerful property-based testing with generators"
+---
+
+## Overview
+
+The `Gen[R, A]` type represents a generator of values of type `A`, which requires an environment `R`. Generators may be random or deterministic and are the foundation of property-based testing in ZIO Test.
+
+## Type Definition
+
+```scala
+final case class Gen[-R, +A](sample: ZStream[R, Nothing, Sample[R, A]])
+```
+
+## Core Methods
+
+### Transformation
+
+#### `map`
+
+Transforms generated values with a function.
+
+```scala
+def map[B](f: A => B)(implicit trace: Trace): Gen[R, B]
+```
+
+**Example:**
+```scala
+val positiveInts = Gen.int(1, 100)
+val doubled = positiveInts.map(_ * 2)
+```
+
+#### `flatMap`
+
+Sequentially composes generators.
+
+```scala
+def flatMap[R1 <: R, B](f: A => Gen[R1, B])(implicit trace: Trace): Gen[R1, B]
+```
+
+**Example:**
+```scala
+val gen = for {
+  length <- Gen.int(1, 10)
+  string <- Gen.stringN(length)(Gen.alphaNumericChar)
+} yield string
+```
+
+#### `mapZIO`
+
+Maps an effectual function over a generator.
+
+```scala
+def mapZIO[R1 <: R, B](f: A => ZIO[R1, Nothing, B])(implicit trace: Trace): Gen[R1, B]
+```
+
+### Filtering
+
+#### `filter`
+
+Filters generated values. Use sparingly as it can reduce performance.
+
+```scala
+def filter(f: A => Boolean)(implicit trace: Trace): Gen[R, A]
+```
+
+**Example:**
+```scala
+val evenNumbers = Gen.int(1, 100).filter(_ % 2 == 0)
+```
+
+<Warning>
+  Using `filter` can significantly reduce test performance, especially if many values are discarded. Prefer using `map` and `flatMap` to create generators of desired values.
+</Warning>
+
+#### `filterNot`
+
+Filters out values that meet the predicate.
+
+```scala
+def filterNot(f: A => Boolean)(implicit trace: Trace): Gen[R, A]
+```
+
+#### `collect`
+
+Maps values with a partial function, discarding undefined values.
+
+```scala
+def collect[B](pf: PartialFunction[A, B])(implicit trace: Trace): Gen[R, B]
+```
+
+### Composition
+
+#### `zip`
+
+Combines two generators into a tuple.
+
+```scala
+def zip[R1 <: R, B](that: Gen[R1, B])(implicit zippable: Zippable[A, B], trace: Trace): Gen[R1, zippable.Out]
+```
+
+**Example:**
+```scala
+val pairs = Gen.int(1, 10).zip(Gen.string)
+// Generates: (Int, String)
+```
+
+#### `zipWith`
+
+Combines two generators with a function.
+
+```scala
+def zipWith[R1 <: R, B, C](that: Gen[R1, B])(f: (A, B) => C)(implicit trace: Trace): Gen[R1, C]
+```
+
+**Example:**
+```scala
+case class Point(x: Int, y: Int)
+val pointGen = Gen.int(0, 100).zipWith(Gen.int(0, 100))(Point.apply)
+```
+
+#### `++`
+
+Concatenates two generators.
+
+```scala
+def ++[R1 <: R, A1 >: A](that: Gen[R1, A1])(implicit trace: Trace): Gen[R1, A1]
+```
+
+### Shrinking
+
+#### `noShrink`
+
+Discards the shrinker for this generator.
+
+```scala
+def noShrink(implicit trace: Trace): Gen[R, A]
+```
+
+**Example:**
+```scala
+val gen = Gen.int(1, 1000).noShrink
+```
+
+#### `reshrink`
+
+Replaces the shrinker with a simpler one.
+
+```scala
+def reshrink[R1 <: R, B](f: A => Sample[R1, B])(implicit trace: Trace): Gen[R1, B]
+```
+
+### Size Control
+
+#### `resize`
+
+Sets the size parameter for this generator.
+
+```scala
+def resize(size: Int)(implicit trace: Trace): Gen[R, A]
+```
+
+**Example:**
+```scala
+val smallLists = Gen.listOf(Gen.int).resize(5)
+```
+
+### Running
+
+#### `runCollect`
+
+Runs the generator and collects all values in a list.
+
+```scala
+def runCollect(implicit trace: Trace): ZIO[R, Nothing, List[A]]
+```
+
+#### `runCollectN`
+
+Runs the generator N times and collects values.
+
+```scala
+def runCollectN(n: Int)(implicit trace: Trace): ZIO[R, Nothing, List[A]]
+```
+
+**Example:**
+```scala
+for {
+  samples <- Gen.int(1, 10).runCollectN(5)
+  _ <- Console.printLine(s"Generated: $samples")
+} yield ()
+```
+
+#### `runHead`
+
+Runs the generator returning the first value.
+
+```scala
+def runHead(implicit trace: Trace): ZIO[R, Nothing, Option[A]]
+```
+
+## Primitive Generators
+
+### Numeric
+
+#### `int`
+
+Generates integers in a range.
+
+```scala
+def int(implicit trace: Trace): Gen[Any, Int]
+def int(min: Int, max: Int)(implicit trace: Trace): Gen[Any, Int]
+```
+
+**Example:**
+```scala
+val dice = Gen.int(1, 6)
+val anyInt = Gen.int
+```
+
+#### `long`
+
+Generates longs in a range.
+
+```scala
+def long(implicit trace: Trace): Gen[Any, Long]
+def long(min: Long, max: Long)(implicit trace: Trace): Gen[Any, Long]
+```
+
+#### `double`
+
+Generates doubles in a range.
+
+```scala
+def double(implicit trace: Trace): Gen[Any, Double]
+def double(min: Double, max: Double)(implicit trace: Trace): Gen[Any, Double]
+```
+
+**Example:**
+```scala
+val probability = Gen.double(0.0, 1.0)
+```
+
+#### `float`
+
+Generates floats.
+
+```scala
+def float(implicit trace: Trace): Gen[Any, Float]
+```
+
+#### `byte`
+
+Generates bytes in a range.
+
+```scala
+def byte(implicit trace: Trace): Gen[Any, Byte]
+def byte(min: Byte, max: Byte)(implicit trace: Trace): Gen[Any, Byte]
+```
+
+#### `short`
+
+Generates shorts in a range.
+
+```scala
+def short(implicit trace: Trace): Gen[Any, Short]
+def short(min: Short, max: Short)(implicit trace: Trace): Gen[Any, Short]
+```
+
+#### `bigInt`
+
+Generates big integers in a range.
+
+```scala
+def bigInt(min: BigInt, max: BigInt)(implicit trace: Trace): Gen[Any, BigInt]
+```
+
+#### `bigDecimal`
+
+Generates big decimals in a range.
+
+```scala
+def bigDecimal(min: BigDecimal, max: BigDecimal)(implicit trace: Trace): Gen[Any, BigDecimal]
+```
+
+### Boolean
+
+#### `boolean`
+
+Generates booleans.
+
+```scala
+def boolean(implicit trace: Trace): Gen[Any, Boolean]
+```
+
+**Example:**
+```scala
+val coin = Gen.boolean
+```
+
+### Characters
+
+#### `char`
+
+Generates characters in a range.
+
+```scala
+def char(implicit trace: Trace): Gen[Any, Char]
+def char(min: Char, max: Char)(implicit trace: Trace): Gen[Any, Char]
+```
+
+#### `alphaChar`
+
+Generates alphabetic characters (a-z, A-Z).
+
+```scala
+def alphaChar(implicit trace: Trace): Gen[Any, Char]
+```
+
+#### `alphaNumericChar`
+
+Generates alphanumeric characters.
+
+```scala
+def alphaNumericChar(implicit trace: Trace): Gen[Any, Char]
+```
+
+**Example:**
+```scala
+val identifier = Gen.alphaChar.zipWith(Gen.listOf(Gen.alphaNumericChar)) {
+  (first, rest) => (first :: rest).mkString
+}
+```
+
+#### `numericChar`
+
+Generates numeric characters (0-9).
+
+```scala
+def numericChar(implicit trace: Trace): Gen[Any, Char]
+```
+
+#### `printableChar`
+
+Generates printable characters.
+
+```scala
+def printableChar(implicit trace: Trace): Gen[Any, Char]
+```
+
+#### `unicodeChar`
+
+Generates Unicode characters.
+
+```scala
+def unicodeChar(implicit trace: Trace): Gen[Any, Char]
+```
+
+#### `hexChar`
+
+Generates hexadecimal characters (0-9, a-f, A-F).
+
+```scala
+def hexChar(implicit trace: Trace): Gen[Any, Char]
+```
+
+### Strings
+
+#### `string`
+
+Generates strings of random size.
+
+```scala
+def string(implicit trace: Trace): Gen[Any, String]
+def string[R](char: Gen[R, Char])(implicit trace: Trace): Gen[R, String]
+```
+
+**Example:**
+```scala
+val alphaStrings = Gen.string(Gen.alphaChar)
+```
+
+#### `stringN`
+
+Generates strings of a specific size.
+
+```scala
+def stringN[R](n: Int)(char: Gen[R, Char])(implicit trace: Trace): Gen[R, String]
+```
+
+**Example:**
+```scala
+val codes = Gen.stringN(6)(Gen.alphaNumericChar)
+```
+
+#### `stringBounded`
+
+Generates strings with size in a range.
+
+```scala
+def stringBounded[R](min: Int, max: Int)(g: Gen[R, Char])(implicit trace: Trace): Gen[R, String]
+```
+
+#### `alphaNumericString`
+
+Generates alphanumeric strings.
+
+```scala
+def alphaNumericString(implicit trace: Trace): Gen[Any, String]
+```
+
+**Example:**
+```scala
+val usernames = Gen.alphaNumericStringBounded(3, 20)
+```
+
+#### `alphaNumericStringBounded`
+
+Generates alphanumeric strings with bounded size.
+
+```scala
+def alphaNumericStringBounded(min: Int, max: Int)(implicit trace: Trace): Gen[Any, String]
+```
+
+### Collections
+
+#### `listOf`
+
+Generates lists of random size.
+
+```scala
+def listOf[R, A](g: Gen[R, A])(implicit trace: Trace): Gen[R, List[A]]
+```
+
+**Example:**
+```scala
+val intLists = Gen.listOf(Gen.int(1, 100))
+```
+
+#### `listOfN`
+
+Generates lists of a specific size.
+
+```scala
+def listOfN[R, A](n: Int)(g: Gen[R, A])(implicit trace: Trace): Gen[R, List[A]]
+```
+
+**Example:**
+```scala
+val triplets = Gen.listOfN(3)(Gen.int)
+```
+
+#### `listOfBounded`
+
+Generates lists with size in a range.
+
+```scala
+def listOfBounded[R, A](min: Int, max: Int)(g: Gen[R, A])(implicit trace: Trace): Gen[R, List[A]]
+```
+
+#### `listOf1`
+
+Generates non-empty lists.
+
+```scala
+def listOf1[R, A](g: Gen[R, A])(implicit trace: Trace): Gen[R, ::[A]]
+```
+
+**Example:**
+```scala
+val nonEmptyLists = Gen.listOf1(Gen.int)
+```
+
+#### `chunkOf`
+
+Generates chunks.
+
+```scala
+def chunkOf[R, A](g: Gen[R, A])(implicit trace: Trace): Gen[R, Chunk[A]]
+```
+
+#### `chunkOfN`
+
+Generates chunks of a specific size.
+
+```scala
+def chunkOfN[R, A](n: Int)(g: Gen[R, A])(implicit trace: Trace): Gen[R, Chunk[A]]
+```
+
+#### `vectorOf`
+
+Generates vectors.
+
+```scala
+def vectorOf[R, A](g: Gen[R, A])(implicit trace: Trace): Gen[R, Vector[A]]
+```
+
+#### `setOf`
+
+Generates sets.
+
+```scala
+def setOf[R, A](gen: Gen[R, A])(implicit trace: Trace): Gen[R, Set[A]]
+```
+
+**Example:**
+```scala
+val uniqueIds = Gen.setOf(Gen.int(1, 1000))
+```
+
+#### `setOfN`
+
+Generates sets of a specific size.
+
+```scala
+def setOfN[R, A](n: Int)(gen: Gen[R, A])(implicit trace: Trace): Gen[R, Set[A]]
+```
+
+**Example:**
+```scala
+val lottery = Gen.setOfN(6)(Gen.int(1, 49))
+```
+
+#### `mapOf`
+
+Generates maps.
+
+```scala
+def mapOf[R, A, B](key: Gen[R, A], value: Gen[R, B])(implicit trace: Trace): Gen[R, Map[A, B]]
+```
+
+**Example:**
+```scala
+val configs = Gen.mapOf(
+  Gen.alphaNumericString,
+  Gen.oneOf(Gen.int, Gen.string)
+)
+```
+
+#### `mapOfN`
+
+Generates maps of a specific size.
+
+```scala
+def mapOfN[R, A, B](n: Int)(key: Gen[R, A], value: Gen[R, B])(implicit trace: Trace): Gen[R, Map[A, B]]
+```
+
+### Option
+
+#### `option`
+
+Generates optional values.
+
+```scala
+def option[R, A](gen: Gen[R, A])(implicit trace: Trace): Gen[R, Option[A]]
+```
+
+**Example:**
+```scala
+val maybeAge = Gen.option(Gen.int(0, 120))
+```
+
+#### `some`
+
+Generates `Some` values.
+
+```scala
+def some[R, A](gen: Gen[R, A])(implicit trace: Trace): Gen[R, Option[A]]
+```
+
+#### `none`
+
+Generates `None`.
+
+```scala
+def none(implicit trace: Trace): Gen[Any, Option[Nothing]]
+```
+
+### Either
+
+#### `either`
+
+Generates either values.
+
+```scala
+def either[R, A, B](left: Gen[R, A], right: Gen[R, B])(implicit trace: Trace): Gen[R, Either[A, B]]
+```
+
+**Example:**
+```scala
+val result = Gen.either(
+  Gen.string.map(ErrorMessage(_)),
+  Gen.int.map(SuccessValue(_))
+)
+```
+
+## Combinators
+
+### `elements`
+
+Generates one of the specified elements.
+
+```scala
+def elements[A](as: A*)(implicit trace: Trace): Gen[Any, A]
+```
+
+**Example:**
+```scala
+val color = Gen.elements("red", "green", "blue")
+val status = Gen.elements(Status.Active, Status.Inactive, Status.Pending)
+```
+
+### `oneOf`
+
+Generates values from one of the specified generators.
+
+```scala
+def oneOf[R, A](as: Gen[R, A]*)(implicit trace: Trace): Gen[R, A]
+```
+
+**Example:**
+```scala
+val mixed = Gen.oneOf(
+  Gen.int(1, 10),
+  Gen.int(100, 1000),
+  Gen.int(10000, 100000)
+)
+```
+
+### `weighted`
+
+Generates values according to weights.
+
+```scala
+def weighted[R, A](gs: (Gen[R, A], Double)*)(implicit trace: Trace): Gen[R, A]
+```
+
+**Example:**
+```scala
+// 90% true, 10% false
+val biasedCoin = Gen.weighted(
+  Gen.const(true) -> 9,
+  Gen.const(false) -> 1
+)
+```
+
+### `const`
+
+A constant generator.
+
+```scala
+def const[A](a: => A)(implicit trace: Trace): Gen[Any, A]
+```
+
+**Example:**
+```scala
+val alwaysFive = Gen.const(5)
+```
+
+### `fromIterable`
+
+Constructs a generator from an iterable.
+
+```scala
+def fromIterable[R, A](
+  as: Iterable[A],
+  shrinker: A => ZStream[R, Nothing, A] = defaultShrinker
+)(implicit trace: Trace): Gen[R, A]
+```
+
+**Example:**
+```scala
+val weekdays = Gen.fromIterable(List("Mon", "Tue", "Wed", "Thu", "Fri"))
+```
+
+### `suspend`
+
+Lazily constructs a generator (useful for recursive structures).
+
+```scala
+def suspend[R, A](gen: => Gen[R, A])(implicit trace: Trace): Gen[R, A]
+```
+
+**Example:**
+```scala
+sealed trait Tree
+case class Leaf(value: Int) extends Tree
+case class Branch(left: Tree, right: Tree) extends Tree
+
+lazy val treeGen: Gen[Any, Tree] = Gen.suspend {
+  Gen.oneOf(
+    Gen.int(1, 100).map(Leaf(_)),
+    treeGen.zipWith(treeGen)(Branch(_, _))
+  )
+}
+```
+
+## Size-Based Generators
+
+### `sized`
+
+A sized generator.
+
+```scala
+def sized[R, A](f: Int => Gen[R, A])(implicit trace: Trace): Gen[R, A]
+```
+
+**Example:**
+```scala
+val gen = Gen.sized { size =>
+  Gen.listOfN(size)(Gen.int)
+}
+```
+
+### `small`
+
+Generates with exponential distribution favoring small sizes.
+
+```scala
+def small[R, A](f: Int => Gen[R, A], min: Int = 0)(implicit trace: Trace): Gen[R, A]
+```
+
+### `medium`
+
+Generates with exponential distribution favoring medium sizes.
+
+```scala
+def medium[R, A](f: Int => Gen[R, A], min: Int = 0)(implicit trace: Trace): Gen[R, A]
+```
+
+### `large`
+
+Generates with uniform distribution across all sizes.
+
+```scala
+def large[R, A](f: Int => Gen[R, A], min: Int = 0)(implicit trace: Trace): Gen[R, A]
+```
+
+## Statistical Generators
+
+### `uniform`
+
+Generates uniformly distributed doubles between 0 and 1.
+
+```scala
+def uniform(implicit trace: Trace): Gen[Any, Double]
+```
+
+### `exponential`
+
+Generates exponentially distributed doubles with mean 1.
+
+```scala
+def exponential(implicit trace: Trace): Gen[Any, Double]
+```
+
+## Specialized Generators
+
+### `uuid`
+
+Generates UUIDs.
+
+```scala
+def uuid(implicit trace: Trace): Gen[Any, UUID]
+```
+
+### `throwable`
+
+Generates throwables.
+
+```scala
+def throwable(implicit trace: Trace): Gen[Any, Throwable]
+```
+
+### `currency`
+
+Generates currencies.
+
+```scala
+def currency(implicit trace: Trace): Gen[Any, java.util.Currency]
+```
+
+### `function`
+
+Generates functions.
+
+```scala
+def function[R, A, B](gen: Gen[R, B])(implicit trace: Trace): Gen[R, A => B]
+```
+
+**Example:**
+```scala
+val intFunction = Gen.function(Gen.int(0, 100))
+```
+
+### `partialFunction`
+
+Generates partial functions.
+
+```scala
+def partialFunction[R, A, B](gen: Gen[R, B])(implicit trace: Trace): Gen[R, PartialFunction[A, B]]
+```
+
+## Property-Based Testing
+
+### Basic Usage
+
+```scala
+test("list reverse property") {
+  check(Gen.listOf(Gen.int)) { list =>
+    assertTrue(list.reverse.reverse == list)
+  }
+}
+```
+
+### Multiple Generators
+
+```scala
+test("addition is commutative") {
+  check(Gen.int, Gen.int) { (a, b) =>
+    assertTrue(a + b == b + a)
+  }
+}
+```
+
+### Custom Generators
+
+```scala
+case class Email(user: String, domain: String) {
+  override def toString: String = s"$user@$domain"
+}
+
+val emailGen: Gen[Any, Email] = for {
+  user   <- Gen.alphaNumericStringBounded(3, 20)
+  domain <- Gen.elements("gmail.com", "example.com", "test.org")
+} yield Email(user, domain)
+
+test("email validation") {
+  check(emailGen) { email =>
+    assertTrue(email.toString.contains("@"))
+  }
+}
+```
+
+## See Also
+
+- [Assertion](/api/test-assertion) - For creating test assertions
+- [Spec](/api/test-spec) - For building test suites
+- [TestAspect](/api/test-aspect) - For modifying test behavior

@@ -1,0 +1,443 @@
+---
+title: Semaphore
+description: Control access to limited resources with semaphores - a generalization of mutexes for managing concurrent access with permits.
+---
+
+A **Semaphore** is an asynchronous semaphore that generalizes a mutex. Semaphores have a certain number of permits, which can be held and released concurrently by different parties. Attempts to acquire more permits than available result in the acquiring fiber being suspended until the specified number of permits become available.
+
+## Basic Concept
+
+A semaphore with one permit is a mutex. A semaphore with N permits allows at most N concurrent operations.
+
+```scala
+import zio._
+
+val program = for {
+  semaphore <- Semaphore.make(permits = 3)
+  
+  // At most 3 fibers can execute concurrently
+  _ <- ZIO.foreachPar(1 to 10) { i =>
+         semaphore.withPermit {
+           ZIO.succeed(println(s"Task $i executing")) *>
+             ZIO.sleep(1.second)
+         }
+       }
+} yield ()
+```
+
+## Creating Semaphores
+
+```scala
+import zio._
+
+// Create with specified number of permits
+val semaphore: UIO[Semaphore] = Semaphore.make(permits = 5)
+
+// Create a mutex (1 permit)
+val mutex: UIO[Semaphore] = Semaphore.make(1)
+
+// Unsafe creation (advanced use)
+val unsafeSemaphore: Semaphore = Semaphore.unsafe.make(5)(Unsafe.unsafe)
+```
+
+## Basic Operations
+
+### withPermit
+
+Acquire a permit, execute effect, then release:
+
+```scala
+val semaphore: Semaphore = ???
+
+val protected: ZIO[Any, String, Int] = 
+  semaphore.withPermit {
+    // This code runs with a permit held
+    ZIO.succeed(42)
+  }
+  // Permit automatically released after effect completes
+```
+
+### withPermits
+
+Acquire multiple permits:
+
+```scala
+val semaphore: Semaphore = ???
+
+val protected: ZIO[Any, Nothing, Unit] = 
+  semaphore.withPermits(3) {
+    // Runs with 3 permits held
+    ZIO.succeed(println("Heavy operation"))
+  }
+```
+
+### tryWithPermit
+
+Try to acquire a permit without blocking:
+
+```scala
+val semaphore: Semaphore = ???
+
+val result: UIO[Option[Int]] = 
+  semaphore.tryWithPermit {
+    ZIO.succeed(42)
+  }
+// Returns None if permit not available, Some(result) otherwise
+```
+
+## Scoped Permits
+
+Acquire permits within a scope:
+
+```scala
+import zio._
+
+val semaphore: Semaphore = ???
+
+val program = ZIO.scoped {
+  for {
+    _      <- semaphore.withPermitScoped
+    result <- someEffect
+    // Permit automatically released when scope closes
+  } yield result
+}
+
+// Multiple permits
+val multiPermit = ZIO.scoped {
+  for {
+    _      <- semaphore.withPermitsScoped(3)
+    result <- someEffect
+  } yield result
+}
+```
+
+## Semaphore Properties
+
+```scala
+val semaphore: Semaphore = ???
+
+// Get available permits
+val available: UIO[Long] = semaphore.available
+
+// Get number of fibers waiting (not always available)
+val waiting: UIO[Long] = semaphore.awaiting
+```
+
+## Mutex Pattern
+
+A semaphore with one permit acts as a mutex:
+
+```scala
+import zio._
+
+class Counter(mutex: Semaphore, ref: Ref[Int]) {
+  def increment: UIO[Unit] =
+    mutex.withPermit {
+      ref.update(_ + 1)
+    }
+  
+  def get: UIO[Int] = ref.get
+}
+
+val program = for {
+  mutex   <- Semaphore.make(1)
+  ref     <- Ref.make(0)
+  counter = new Counter(mutex, ref)
+  
+  // Safe concurrent increments
+  _ <- ZIO.foreachParDiscard(1 to 100)(_ => counter.increment)
+  
+  total <- counter.get
+} yield total // 100
+```
+
+<Note>
+  While you could use `Ref` alone for a counter, this pattern demonstrates mutual exclusion for operations that can't be made atomic with `Ref.modify`.
+</Note>
+
+## Resource Pool Pattern
+
+```scala
+import zio._
+
+class ConnectionPool(
+  semaphore: Semaphore,
+  connections: Ref[List[Connection]]
+) {
+  def withConnection[R, E, A](f: Connection => ZIO[R, E, A]): ZIO[R, E, A] =
+    semaphore.withPermit {
+      for {
+        conn   <- acquireConnection
+        result <- f(conn)
+        _      <- releaseConnection(conn)
+      } yield result
+    }
+  
+  private def acquireConnection: UIO[Connection] =
+    connections.modify {
+      case head :: tail => (head, tail)
+      case Nil          => ??? // Should never happen with proper sizing
+    }
+  
+  private def releaseConnection(conn: Connection): UIO[Unit] =
+    connections.update(conn :: _)
+}
+
+val program = for {
+  // Pool of 5 connections
+  semaphore <- Semaphore.make(5)
+  conns     <- Ref.make(List.fill(5)(new Connection))
+  pool      = new ConnectionPool(semaphore, conns)
+  
+  // At most 5 concurrent database operations
+  _ <- ZIO.foreachPar(1 to 20) { i =>
+         pool.withConnection { conn =>
+           ZIO.succeed(println(s"Query $i using $conn"))
+         }
+       }
+} yield ()
+```
+
+## Rate Limiting Pattern
+
+```scala
+import zio._
+
+class RateLimiter(semaphore: Semaphore, refillRate: Duration) {
+  // Start background refill process
+  val refill: UIO[Fiber[Nothing, Nothing]] =
+    semaphore.withPermit(ZIO.unit)
+      .schedule(Schedule.fixed(refillRate))
+      .fork
+  
+  def execute[R, E, A](effect: ZIO[R, E, A]): ZIO[R, E, A] =
+    semaphore.withPermit(effect)
+}
+
+val program = for {
+  semaphore <- Semaphore.make(10) // 10 permits
+  limiter   = new RateLimiter(semaphore, 100.millis)
+  _         <- limiter.refill
+  
+  // Execute at most 10 requests per 100ms
+  _ <- ZIO.foreach(1 to 50) { i =>
+         limiter.execute {
+           ZIO.succeed(println(s"Request $i"))
+         }
+       }
+} yield ()
+```
+
+## Throttling Pattern
+
+Limit concurrent operations:
+
+```scala
+import zio._
+
+def throttled[R, E, A](
+  operations: List[ZIO[R, E, A]],
+  maxConcurrent: Int
+): ZIO[R, E, List[A]] =
+  for {
+    semaphore <- Semaphore.make(maxConcurrent.toLong)
+    results   <- ZIO.foreachPar(operations) { op =>
+                   semaphore.withPermit(op)
+                 }
+  } yield results
+
+val program = {
+  val operations = (1 to 100).map { i =>
+    ZIO.succeed(println(s"Operation $i")) *>
+      ZIO.sleep(100.millis)
+  }.toList
+  
+  // At most 5 operations at a time
+  throttled(operations, maxConcurrent = 5)
+}
+```
+
+## ReadWrite Lock Pattern
+
+```scala
+import zio._
+
+class ReadWriteLock(readers: Semaphore, writer: Semaphore) {
+  def read[R, E, A](effect: ZIO[R, E, A]): ZIO[R, E, A] =
+    readers.withPermit(effect)
+  
+  def write[R, E, A](effect: ZIO[R, E, A]): ZIO[R, E, A] =
+    writer.withPermit {
+      // Acquire all read permits to ensure no readers
+      readers.withPermits(maxReaders)(effect)
+    }
+  
+  private val maxReaders = 1000L
+}
+
+object ReadWriteLock {
+  def make(maxReaders: Long): UIO[ReadWriteLock] =
+    for {
+      readers <- Semaphore.make(maxReaders)
+      writer  <- Semaphore.make(1)
+    } yield new ReadWriteLock(readers, writer)
+}
+
+val program = for {
+  lock <- ReadWriteLock.make(100)
+  ref  <- Ref.make(Map.empty[String, Int])
+  
+  // Multiple concurrent readers
+  _ <- ZIO.foreachPar(1 to 10) { i =>
+         lock.read {
+           ref.get.map(_.get("key"))
+         }
+       }
+  
+  // Exclusive writer
+  _ <- lock.write {
+         ref.update(_ + ("key" -> 42))
+       }
+} yield ()
+```
+
+## Barrier Pattern
+
+```scala
+import zio._
+
+class Barrier(semaphore: Semaphore, parties: Long) {
+  def await: UIO[Unit] =
+    for {
+      // Try to acquire all permits
+      _     <- semaphore.withPermits(parties)(ZIO.unit)
+      // Release them all at once
+      _     <- ZIO.foreachDiscard(1L to parties)(_ => release)
+    } yield ()
+  
+  def arrive: UIO[Unit] = release
+  
+  private def release: UIO[Unit] =
+    semaphore.withPermits(-1)(ZIO.unit) // "Negative" acquire is release
+}
+
+val program = for {
+  semaphore <- Semaphore.make(0) // Start with 0 permits
+  barrier   = new Barrier(semaphore, parties = 5)
+  
+  // Launch 5 fibers
+  fibers <- ZIO.foreach(1 to 5) { i =>
+              (ZIO.succeed(println(s"Fiber $i: preparing")) *>
+               ZIO.sleep(Random.nextIntBetween(100, 1000).millis) *>
+               ZIO.succeed(println(s"Fiber $i: arrived")) *>
+               barrier.arrive *>
+               barrier.await *>
+               ZIO.succeed(println(s"Fiber $i: proceeding"))).fork
+            }
+  
+  _ <- ZIO.foreach(fibers)(_.join)
+} yield ()
+```
+
+## Dining Philosophers Problem
+
+```scala
+import zio._
+
+class Fork(semaphore: Semaphore) {
+  def pickUp: UIO[Unit] = semaphore.withPermit(ZIO.unit)
+  def putDown: UIO[Unit] = ZIO.unit // Released automatically
+}
+
+class Philosopher(id: Int, left: Fork, right: Fork) {
+  def dine: UIO[Unit] =
+    (think *> eat).forever
+  
+  private def think: UIO[Unit] =
+    ZIO.succeed(println(s"Philosopher $id: thinking")) *>
+      ZIO.sleep(Random.nextIntBetween(100, 1000).millis)
+  
+  private def eat: UIO[Unit] =
+    // Pick up forks in order to prevent deadlock
+    val (first, second) = if (id % 2 == 0) (left, right) else (right, left)
+    
+    first.semaphore.withPermit {
+      second.semaphore.withPermit {
+        ZIO.succeed(println(s"Philosopher $id: eating")) *>
+          ZIO.sleep(Random.nextIntBetween(100, 500).millis)
+      }
+    }
+}
+
+val program = for {
+  forks        <- ZIO.foreach(1 to 5)(_ => Semaphore.make(1).map(new Fork(_)))
+  philosophers = (0 until 5).map { i =>
+                   new Philosopher(i, forks(i), forks((i + 1) % 5))
+                 }
+  fibers       <- ZIO.foreach(philosophers)(_.dine.fork)
+  _            <- ZIO.sleep(10.seconds)
+  _            <- ZIO.foreachDiscard(fibers)(_.interrupt)
+} yield ()
+```
+
+## Advanced: Permit Reservations
+
+For more control, you can use reservations:
+
+```scala
+import zio._
+
+val semaphore: Semaphore = ???
+
+// This is what withPermit does internally
+val manualPermit = for {
+  reservation <- semaphore.reserve(1) // Internal API
+  _           <- reservation.acquire   // Wait for permit
+  result      <- someEffect
+  _           <- reservation.release   // Release permit
+} yield result
+```
+
+<Warning>
+  The reservation API is internal. Always prefer `withPermit` and `withPermits` for normal use cases.
+</Warning>
+
+## Best Practices
+
+<Tip>
+  Always use `withPermit` or `withPermitScoped` to ensure permits are released even if the effect fails or is interrupted.
+</Tip>
+
+<Card title="Sizing Semaphores" icon="ruler">
+  Choose the number of permits based on your resource constraints. For CPU-bound tasks, use the number of CPU cores. For I/O-bound tasks, use a higher number based on connection limits or rate limits.
+</Card>
+
+<Card title="Avoiding Deadlock" icon="lock">
+  When acquiring multiple semaphores, always acquire them in a consistent order across all fibers to prevent deadlock.
+</Card>
+
+<Warning>
+  Don't use semaphores for simple atomic updates. Use `Ref` instead. Semaphores are for limiting concurrency, not for protecting shared state modifications.
+</Warning>
+
+## Semaphore vs Other Concurrency Primitives
+
+<CardGroup cols={3}>
+  <Card title="Semaphore" icon="traffic-light">
+    Limits concurrent access to resources. Use when you need to control the number of concurrent operations.
+  </Card>
+  
+  <Card title="Ref" icon="atom">
+    Atomic mutable state. Use for simple state updates that need to be atomic.
+  </Card>
+  
+  <Card title="Queue" icon="list">
+    Producer-consumer coordination. Use when you need to buffer and process items sequentially or with limited concurrency.
+  </Card>
+</CardGroup>
+
+## Performance Considerations
+
+<Card title="Lock-Free" icon="gauge-high">
+  ZIO's semaphore implementation is optimized for performance and uses efficient data structures. However, under high contention, consider whether you really need fine-grained locking or if batching operations would be more efficient.
+</Card>

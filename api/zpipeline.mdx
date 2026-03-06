@@ -1,0 +1,534 @@
+---
+title: ZPipeline
+---
+
+A `ZPipeline[Env, Err, In, Out]` is a polymorphic stream transformer. Pipelines accept a stream as input and return a transformed stream as output.
+
+Pipelines can be thought of as a recipe for calling a bunch of methods on a source stream to yield a new (transformed) stream. They separate the stream transformation from the source stream itself, making it possible to abstract over stream transformations at the level of values.
+
+## Type Signature
+
+```scala
+final class ZPipeline[-Env, +Err, -In, +Out] private (
+  val channel: ZChannel[Env, ZNothing, Chunk[In], Any, Err, Chunk[Out], Any]
+)
+```
+
+The type parameters are:
+- `Env` - Environment required by the pipeline
+- `Err` - Error type the pipeline may produce
+- `In` - Type of input elements
+- `Out` - Type of output elements
+
+## Mental Model
+
+A pipeline can be thought of as having this type (though this exact encoding is not used for inference reasons):
+
+```scala
+type ZPipeline[Env, Err, In, Out] = ZStream[Env, Err, In] => ZStream[Env, Err, Out]
+```
+
+## Core Constructors
+
+### Identity & Basic
+
+#### `identity`
+```scala
+def identity[In](implicit trace: Trace): ZPipeline[Any, Nothing, In, In]
+```
+The identity pipeline that passes through all elements unchanged.
+
+#### `apply`
+```scala
+def apply[In](implicit trace: Trace): ZPipeline[Any, Nothing, In, In]
+```
+A shorter version of `identity`, which facilitates more compact pipeline definitions.
+
+```scala
+ZPipeline[Int] >>> ZPipeline.filter(_ % 2 != 0)
+```
+
+### Construction
+
+#### `fromFunction`
+```scala
+def fromFunction[Env, Err, In, Out](
+  f: ZStream[Env, Err, In] => ZStream[Env, Err, Out]
+): ZPipeline[Env, Err, In, Out]
+```
+Creates a pipeline from a function that transforms streams.
+
+#### `fromSink`
+```scala
+def fromSink[Env, Err, In, L, Z](
+  sink: => ZSink[Env, Err, In, L, Z]
+)(implicit trace: Trace): ZPipeline[Env, Err, In, Z]
+```
+Creates a pipeline from a sink. The pipeline repeatedly runs the sink and emits its results.
+
+#### `fromChannel`
+```scala
+def fromChannel[Env, Err, In, Out](
+  channel: => ZChannel[Env, ZNothing, Chunk[In], Any, Err, Chunk[Out], Any]
+)(implicit trace: Trace): ZPipeline[Env, Err, In, Out]
+```
+Creates a pipeline from a channel.
+
+### Aggregation
+
+#### `aggregateAsync`
+```scala
+def aggregateAsync[Env, Err, In, Out](
+  sink: => ZSink[Env, Err, In, In, Out]
+)(implicit trace: Trace): ZPipeline[Env, Err, In, Out]
+```
+Aggregates elements using the provided sink for as long as downstream operators are busy. Creates two asynchronous processing islands.
+
+#### `aggregateAsyncWithin`
+```scala
+def aggregateAsyncWithin[Env, Err, In, Out](
+  sink: => ZSink[Env, Err, In, In, Out],
+  schedule: => Schedule[Env, Option[Out], Any]
+)(implicit trace: Trace): ZPipeline[Env, Err, In, Out]
+```
+Aggregates elements using a sink until it completes or until the delay signaled by the schedule has passed.
+
+#### `aggregateAsyncWithinEither`
+```scala
+def aggregateAsyncWithinEither[Env, Err, In, Out, Out2](
+  sink: => ZSink[Env, Err, In, In, Out],
+  schedule: => Schedule[Env, Option[Out], Out2]
+)(implicit trace: Trace): ZPipeline[Env, Err, In, Either[Out2, Out]]
+```
+Like `aggregateAsyncWithin` but returns both schedule outputs (Left) and sink outputs (Right).
+
+### Filtering & Selection
+
+#### `filter`
+```scala
+def filter[In](f: In => Boolean)(implicit trace: Trace): ZPipeline[Any, Nothing, In, In]
+```
+Filters elements according to the specified predicate.
+
+#### `filterZIO`
+```scala
+def filterZIO[Env, Err, In](
+  f: In => ZIO[Env, Err, Boolean]
+)(implicit trace: Trace): ZPipeline[Env, Err, In, In]
+```
+Effectfully filters elements.
+
+#### `collect`
+```scala
+def collect[In, Out](
+  pf: PartialFunction[In, Out]
+)(implicit trace: Trace): ZPipeline[Any, Nothing, In, Out]
+```
+Performs a filter and map in a single step using a partial function.
+
+#### `collectWhile`
+```scala
+def collectWhile[In, Out](
+  pf: PartialFunction[In, Out]
+)(implicit trace: Trace): ZPipeline[Any, Nothing, In, Out]
+```
+Collects elements while the partial function is defined.
+
+#### `take`
+```scala
+def take[In](n: => Long)(implicit trace: Trace): ZPipeline[Any, Nothing, In, In]
+```
+Takes the first `n` elements.
+
+#### `takeWhile`
+```scala
+def takeWhile[In](
+  f: In => Boolean
+)(implicit trace: Trace): ZPipeline[Any, Nothing, In, In]
+```
+Takes elements while the predicate is satisfied.
+
+#### `takeUntil`
+```scala
+def takeUntil[In](
+  f: In => Boolean
+)(implicit trace: Trace): ZPipeline[Any, Nothing, In, In]
+```
+Takes elements until the predicate is satisfied.
+
+#### `drop`
+```scala
+def drop[In](n: => Long)(implicit trace: Trace): ZPipeline[Any, Nothing, In, In]
+```
+Drops the first `n` elements.
+
+#### `dropWhile`
+```scala
+def dropWhile[In](
+  f: In => Boolean
+)(implicit trace: Trace): ZPipeline[Any, Nothing, In, In]
+```
+Drops elements while the predicate is satisfied.
+
+### Mapping & Transformation
+
+#### `map`
+```scala
+def map[In, Out](f: In => Out)(implicit trace: Trace): ZPipeline[Any, Nothing, In, Out]
+```
+Maps each element using the specified function.
+
+#### `mapZIO`
+```scala
+def mapZIO[Env, Err, In, Out](
+  f: In => ZIO[Env, Err, Out]
+)(implicit trace: Trace): ZPipeline[Env, Err, In, Out]
+```
+Effectfully maps each element.
+
+#### `mapChunks`
+```scala
+def mapChunks[In, Out](
+  f: Chunk[In] => Chunk[Out]
+)(implicit trace: Trace): ZPipeline[Any, Nothing, In, Out]
+```
+Maps entire chunks of elements.
+
+#### `mapChunksZIO`
+```scala
+def mapChunksZIO[Env, Err, In, Out](
+  f: Chunk[In] => ZIO[Env, Err, Chunk[Out]]
+)(implicit trace: Trace): ZPipeline[Env, Err, In, Out]
+```
+Effectfully maps entire chunks of elements.
+
+#### `mapConcat`
+```scala
+def mapConcat[In, Out](
+  f: In => Iterable[Out]
+)(implicit trace: Trace): ZPipeline[Any, Nothing, In, Out]
+```
+Maps each element to an iterable and flattens the results.
+
+#### `mapConcatChunk`
+```scala
+def mapConcatChunk[In, Out](
+  f: In => Chunk[Out]
+)(implicit trace: Trace): ZPipeline[Any, Nothing, In, Out]
+```
+Maps each element to a chunk and flattens the results.
+
+#### `mapAccum`
+```scala
+def mapAccum[In, Out, State](
+  s: => State
+)(f: (State, In) => (State, Out))(implicit trace: Trace): ZPipeline[Any, Nothing, In, Out]
+```
+Maps elements while maintaining internal state.
+
+#### `mapAccumZIO`
+```scala
+def mapAccumZIO[Env, Err, In, Out, State](
+  s: => State
+)(f: (State, In) => ZIO[Env, Err, (State, Out)])(implicit 
+  trace: Trace
+): ZPipeline[Env, Err, In, Out]
+```
+Effectfully maps elements while maintaining internal state.
+
+### Deduplication
+
+#### `changes`
+```scala
+def changes[Err, In](implicit trace: Trace): ZPipeline[Any, Err, In, In]
+```
+Returns a pipeline that only emits elements that are not equal to the previous element.
+
+#### `changesWith`
+```scala
+def changesWith[Err, In](
+  f: (In, In) => Boolean
+)(implicit trace: Trace): ZPipeline[Any, Err, In, In]
+```
+Returns a pipeline that only emits elements that are not equal to the previous element using a custom equality function.
+
+#### `changesWithZIO`
+```scala
+def changesWithZIO[Env, Err, In](
+  f: (In, In) => ZIO[Env, Err, Boolean]
+)(implicit trace: Trace): ZPipeline[Env, Err, In, In]
+```
+Returns a pipeline that only emits elements that are not equal to the previous element using an effectful equality function.
+
+#### `deduplicate`
+```scala
+def deduplicate[In](implicit trace: Trace): ZPipeline[Any, Nothing, In, In]
+```
+Removes duplicate elements from the stream.
+
+#### `deduplicateAdjacent`
+```scala
+def deduplicateAdjacent[In](implicit trace: Trace): ZPipeline[Any, Nothing, In, In]
+```
+Removes adjacent duplicate elements (alias for `changes`).
+
+### Grouping & Chunking
+
+#### `chunks`
+```scala
+def chunks[In](implicit trace: Trace): ZPipeline[Any, Nothing, In, Chunk[In]]
+```
+Exposes the chunk structure of the stream.
+
+#### `grouped`
+```scala
+def grouped[In](n: => Int)(implicit trace: Trace): ZPipeline[Any, Nothing, In, Chunk[In]]
+```
+Groups elements into chunks of the specified size.
+
+#### `groupedWithin`
+```scala
+def groupedWithin[In](
+  n: => Int,
+  duration: => Duration
+)(implicit trace: Trace): ZPipeline[Any, Nothing, In, Chunk[In]]
+```
+Groups elements by both size and time window.
+
+#### `rechunk`
+```scala
+def rechunk[In](n: => Int)(implicit trace: Trace): ZPipeline[Any, Nothing, In, In]
+```
+Re-chunks the stream with the specified chunk size.
+
+### Scanning
+
+#### `scan`
+```scala
+def scan[In, Out](
+  s: => Out
+)(f: (Out, In) => Out)(implicit trace: Trace): ZPipeline[Any, Nothing, In, Out]
+```
+Performs a scan (stateful map) over the stream elements.
+
+#### `scanZIO`
+```scala
+def scanZIO[Env, Err, In, Out](
+  s: => Out
+)(f: (Out, In) => ZIO[Env, Err, Out])(implicit trace: Trace): ZPipeline[Env, Err, In, Out]
+```
+Effectfully performs a scan over the stream elements.
+
+### Interleaving & Interspersing
+
+#### `intersperse`
+```scala
+def intersperse[In](middle: => In)(implicit trace: Trace): ZPipeline[Any, Nothing, In, In]
+```
+Intersperses the specified element between each element of the stream.
+
+#### `intersperseAffixes`
+```scala
+def intersperseAffixes[In](
+  start: => In,
+  middle: => In,
+  end: => In
+)(implicit trace: Trace): ZPipeline[Any, Nothing, In, In]
+```
+Intersperses elements with start, middle, and end elements.
+
+### Encoding & Decoding
+
+#### `utf8Decode`
+```scala
+def utf8Decode(implicit trace: Trace): ZPipeline[Any, CharacterCodingException, Byte, String]
+```
+Decodes a stream of bytes into strings using UTF-8 encoding.
+
+#### `utf8Encode`
+```scala
+def utf8Encode(implicit trace: Trace): ZPipeline[Any, Nothing, String, Byte]
+```
+Encodes a stream of strings into bytes using UTF-8 encoding.
+
+#### `decodeStringWith`
+```scala
+def decodeStringWith(
+  charset: => Charset
+)(implicit trace: Trace): ZPipeline[Any, CharacterCodingException, Byte, String]
+```
+Decodes a stream of bytes into strings using the specified charset.
+
+#### `encodeStringWith`
+```scala
+def encodeStringWith(
+  charset: => Charset
+)(implicit trace: Trace): ZPipeline[Any, CharacterCodingException, String, Byte]
+```
+Encodes a stream of strings into bytes using the specified charset.
+
+### Compression
+
+#### `gunzip`
+```scala
+def gunzip(bufferSize: => Int = 64 * 1024)(implicit 
+  trace: Trace
+): ZPipeline[Any, CompressionException, Byte, Byte]
+```
+Decompresses a gzip-compressed stream of bytes.
+
+#### `gzip`
+```scala
+def gzip(
+  bufferSize: => Int = 64 * 1024,
+  level: => CompressionLevel = CompressionLevel.DefaultCompression
+)(implicit trace: Trace): ZPipeline[Any, Nothing, Byte, Byte]
+```
+Compresses a stream of bytes using gzip.
+
+#### `inflate`
+```scala
+def inflate(
+  bufferSize: => Int = 64 * 1024
+)(implicit trace: Trace): ZPipeline[Any, CompressionException, Byte, Byte]
+```
+Decompresses a stream of bytes using inflate (DEFLATE).
+
+#### `deflate`
+```scala
+def deflate(
+  bufferSize: => Int = 64 * 1024,
+  level: => CompressionLevel = CompressionLevel.DefaultCompression
+)(implicit trace: Trace): ZPipeline[Any, Nothing, Byte, Byte]
+```
+Compresses a stream of bytes using deflate (DEFLATE).
+
+### Timing
+
+#### `throttleShape`
+```scala
+def throttleShape[In](
+  units: => Long,
+  duration: => Duration,
+  burst: => Long = 0
+)(costFn: In => Long)(implicit trace: Trace): ZPipeline[Any, Nothing, In, In]
+```
+Throttles the stream using a token bucket algorithm.
+
+### Utility
+
+#### `drain`
+```scala
+def drain[In](implicit trace: Trace): ZPipeline[Any, Nothing, In, Nothing]
+```
+A pipeline that consumes all elements but emits nothing.
+
+#### `prepend`
+```scala
+def prepend[In](values: => Chunk[In])(implicit 
+  trace: Trace
+): ZPipeline[Any, Nothing, In, In]
+```
+Prepends the specified values to the stream.
+
+#### `append`
+```scala
+def append[In](values: => Chunk[In])(implicit 
+  trace: Trace
+): ZPipeline[Any, Nothing, In, In]
+```
+Appends the specified values to the stream.
+
+### Advanced
+
+#### `branchAfter`
+```scala
+def branchAfter[Env, Err, In, Out](
+  n: => Int
+)(f: Chunk[In] => ZPipeline[Env, Err, In, Out])(implicit 
+  trace: Trace
+): ZPipeline[Env, Err, In, Out]
+```
+A dynamic pipeline that first collects `n` elements, then creates another pipeline based on those elements.
+
+## Pipeline Composition
+
+### Applying a Pipeline
+
+```scala
+def apply[Env1 <: Env, Err1 >: Err](
+  stream: => ZStream[Env1, Err1, In]
+)(implicit trace: Trace): ZStream[Env1, Err1, Out]
+```
+Attaches this pipeline to the given stream.
+
+### Composing Pipelines
+
+#### `>>>`
+```scala
+def >>>[Env1 <: Env, Err1 >: Err, Out2](
+  that: => ZPipeline[Env1, Err1, Out, Out2]
+)(implicit trace: Trace): ZPipeline[Env1, Err1, In, Out2]
+```
+Composes two pipelines by first applying this pipeline, then applying the specified pipeline.
+
+#### `<<<`
+```scala
+def <<<[Env1 <: Env, Err1 >: Err, In2](
+  that: => ZPipeline[Env1, Err1, In2, In]
+)(implicit trace: Trace): ZPipeline[Env1, Err1, In2, Out]
+```
+Composes two pipelines by first applying the specified pipeline, then applying this pipeline.
+
+#### `andThen`
+```scala
+def andThen[Env1 <: Env, Err1 >: Err, Out2](
+  that: => ZPipeline[Env1, Err1, Out, Out2]
+)(implicit trace: Trace): ZPipeline[Env1, Err1, In, Out2]
+```
+A named version of the `>>>` operator.
+
+### Composing with Sinks
+
+```scala
+def >>>[Env1 <: Env, Err1 >: Err, Leftover, Out2](
+  that: => ZSink[Env1, Err1, Out, Leftover, Out2]
+)(implicit trace: Trace): ZSink[Env1, Err1, In, Leftover, Out2]
+```
+Composes this pipeline with a sink, resulting in a sink that processes elements through the pipeline first.
+
+## Common Patterns
+
+### Text Processing
+```scala
+val linesPipeline = 
+  ZPipeline.utf8Decode >>> 
+  ZPipeline.splitLines
+
+stream >>> linesPipeline
+```
+
+### Batching with Timeout
+```scala
+val batchPipeline = 
+  ZPipeline.groupedWithin(100, 1.second)
+
+stream >>> batchPipeline
+```
+
+### Deduplication
+```scala
+val dedupPipeline = 
+  ZPipeline.changes
+
+stream >>> dedupPipeline
+```
+
+### Compression
+```scala
+val compressPipeline = 
+  ZPipeline.utf8Encode >>> 
+  ZPipeline.gzip()
+
+stream >>> compressPipeline
+```

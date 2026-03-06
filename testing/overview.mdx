@@ -1,0 +1,201 @@
+---
+title: Testing Overview
+description: Learn how to write tests with ZIO Test framework
+---
+
+ZIO Test is a featherweight testing library for effectful programs. It provides a testing framework specifically designed for ZIO effects, making it easy to test asynchronous, concurrent, and resource-safe code.
+
+## Why ZIO Test?
+
+ZIO Test is built from the ground up to work seamlessly with ZIO effects:
+
+- **Fully integrated with ZIO** - Test your ZIO code naturally without adapters
+- **Deterministic testing** - Control time, randomness, and other effects for reproducible tests
+- **Property-based testing** - Generate test cases automatically with powerful generators
+- **Rich assertions** - Express complex test conditions with smart, compositional assertions
+- **Resource management** - Safely acquire and release resources in tests
+- **Parallel execution** - Run tests concurrently for faster feedback
+
+## Writing Your First Test
+
+Create a test spec by extending `ZIOSpecDefault`:
+
+```scala
+import zio._
+import zio.test._
+
+object MyFirstTest extends ZIOSpecDefault {
+  def spec = suite("My first test suite")(
+    test("addition works") {
+      assertTrue(1 + 1 == 2)
+    },
+    test("ZIO effects work") {
+      for {
+        ref <- Ref.make(0)
+        _   <- ref.update(_ + 1)
+        value <- ref.get
+      } yield assertTrue(value == 1)
+    }
+  )
+}
+```
+
+### Test Structure
+
+Every ZIO test has three main components:
+
+1. **Suite** - A collection of related tests
+2. **Test** - An individual test case  
+3. **Assertion** - The condition being verified
+
+<CodeGroup>
+```scala Suite
+suite("Calculator tests")(
+  test("addition") { /* ... */ },
+  test("subtraction") { /* ... */ }
+)
+```
+
+```scala Test
+test("user can be created") {
+  for {
+    user <- UserService.create("Alice")
+  } yield assertTrue(user.name == "Alice")
+}
+```
+
+```scala Assertion
+true,
+assert(result)(equalTo(expected)),
+true
+```
+</CodeGroup>
+
+## Test Lifecycle
+
+ZIO Test provides hooks to run setup and teardown logic:
+
+```scala
+object DatabaseTest extends ZIOSpecDefault {
+  def spec = suite("database tests")(
+    test("insert user") {
+      for {
+        _ <- DatabaseService.insert(User("Alice"))
+        users <- DatabaseService.all
+      } yield assertTrue(users.size == 1)
+    }
+  ) @@ TestAspect.beforeAll(DatabaseService.migrate) @@
+       TestAspect.afterAll(DatabaseService.clean)
+}
+```
+
+## Smart Assertions
+
+ZIO Test provides intelligent assertions that give helpful error messages:
+
+```scala
+test("list operations") {
+  val list = List(1, 2, 3, 4, 5)
+  
+  assertTrue(
+    list.size == 5,
+    list.contains(3),
+    list.head == 1,
+    list.last == 5
+  )
+}
+```
+
+Multiple assertions can be combined with `&&` and `||`:
+
+```scala
+test("complex assertion") {
+  val user = User("Alice", 25)
+  
+  assert(user)(hasField("name", _.name, equalTo("Alice"))) &&
+  assert(user)(hasField("age", _.age, isGreaterThan(18)))
+}
+```
+
+## Running Tests
+
+### From SBT
+
+```bash
+sbt test
+```
+
+### Running Specific Tests
+
+```bash
+sbt "testOnly *MyTest"
+```
+
+### With Custom Configuration
+
+```scala
+object MyTest extends ZIOSpecDefault {
+  override def aspects = Chunk(
+    TestAspect.timeout(60.seconds),
+    TestAspect.samples(1000)
+  )
+
+  def spec = /* ... */
+}
+```
+
+## Test Organization
+
+Organize tests into nested suites for better structure:
+
+```scala
+object UserServiceTest extends ZIOSpecDefault {
+  def spec = suite("UserService")(
+    suite("creation")(
+      test("creates user with valid data") { /* ... */ },
+      test("rejects invalid email") { /* ... */ }
+    ),
+    suite("updates")(
+      test("updates user name") { /* ... */ },
+      test("updates user email") { /* ... */ }
+    )
+  )
+}
+```
+
+## Sharing Resources
+
+Share expensive resources across tests with layers:
+
+```scala
+object DatabaseTest extends ZIOSpecDefault {
+  val dbLayer: ZLayer[Any, Throwable, Database] =
+    Database.live
+
+  def spec = suite("database tests")(
+    test("query users") {
+      for {
+        db <- ZIO.service[Database]
+        users <- db.queryUsers
+      } yield assertTrue(users.nonEmpty)
+    }
+  ).provide(dbLayer)
+}
+```
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Assertions" icon="check" href="/testing/assertions">
+    Learn about the rich assertion library
+  </Card>
+  <Card title="Test Aspects" icon="sliders" href="/testing/test-aspects">
+    Modify test behavior with aspects
+  </Card>
+  <Card title="Property Testing" icon="random" href="/testing/property-testing">
+    Generate test cases automatically
+  </Card>
+  <Card title="Test Services" icon="flask" href="/testing/test-services">
+    Control time, randomness, and console
+  </Card>
+</CardGroup>

@@ -1,0 +1,779 @@
+---
+title: "Migrating from Monix"
+description: "A comprehensive guide to migrating from Monix to ZIO"
+icon: "right-left"
+---
+
+# Migrating from Monix to ZIO
+
+This guide helps you migrate your Monix applications to ZIO. Both libraries share similar philosophies around functional effect systems and streaming, making migration relatively straightforward. ZIO offers enhanced type safety, built-in dependency injection, and a more comprehensive ecosystem.
+
+## Key Similarities
+
+<CardGroup cols={2}>
+  <Card title="Effect Types" icon="bolt">
+    Both use effect types to describe computations - Monix's `Task` and ZIO's `ZIO`
+  </Card>
+  <Card title="Streaming" icon="water">
+    Both have powerful streaming abstractions - Monix's `Observable` and ZIO's `ZStream`
+  </Card>
+  <Card title="Concurrency" icon="arrows-split-up-and-left">
+    Both provide fiber-based concurrency with similar operations
+  </Card>
+  <Card title="Resource Safety" icon="shield">
+    Both ensure proper resource cleanup with bracket-style operations
+  </Card>
+</CardGroup>
+
+## Type Mapping
+
+Here's how Monix types map to ZIO types:
+
+| Monix | ZIO Equivalent | Notes |
+|-------|----------------|-------|
+| `Task[A]` | `Task[A]` or `ZIO[Any, Throwable, A]` | Asynchronous effect |
+| `UIO[A]` | `UIO[A]` or `ZIO[Any, Nothing, A]` | Effect that cannot fail |
+| `Coeval[A]` | `UIO[A]` | Synchronous, infallible effect |
+| `Observable[A]` | `ZStream[Any, Throwable, A]` | Stream of values |
+| `TaskLocal[A]` | `FiberRef[A]` | Fiber-local state |
+| `MVar[A]` | `Promise[Throwable, A]` | One-shot async variable |
+| `Semaphore` | `Semaphore` | Concurrency control |
+
+## Basic Effect Creation
+
+<CodeGroup>
+```scala Monix
+import monix.eval._
+import monix.execution.Scheduler.Implicits.global
+
+// Pure value
+val pureValue: Task[Int] = Task.pure(42)
+
+// Delayed computation
+val delayed: Task[Int] = Task {
+  println("Computing...")
+  42
+}
+
+// From Future
+import scala.concurrent.Future
+val fromFuture: Task[Int] = 
+  Task.deferFuture(Future.successful(42))
+
+// From Either
+val fromEither: Task[Int] = 
+  Task.fromEither(Right(42))
+
+// Async operation
+val async: Task[Int] = Task.async { cb =>
+  // Some async operation
+  cb(Right(42))
+}
+
+// Never completes
+val never: Task[Nothing] = Task.never
+```
+
+```scala ZIO
+import zio._
+
+// Pure value
+val pureValue: UIO[Int] = ZIO.succeed(42)
+
+// Delayed computation
+val delayed: Task[Int] = ZIO.attempt {
+  println("Computing...")
+  42
+}
+
+// From Future
+import scala.concurrent.Future
+val fromFuture: Task[Int] = 
+  ZIO.fromFuture(_ => Future.successful(42))
+
+// From Either
+val fromEither: Task[Int] = 
+  ZIO.fromEither(Right(42))
+
+// Async operation
+val async: Task[Int] = ZIO.async { cb =>
+  // Some async operation
+  cb(ZIO.succeed(42))
+}
+
+// Never completes
+val never: UIO[Nothing] = ZIO.never
+```
+</CodeGroup>
+
+## Error Handling
+
+<CodeGroup>
+```scala Monix
+import monix.eval._
+
+val program: Task[String] = Task {
+  dangerousOperation()
+}.onErrorHandle { error =>
+  println(s"Error: $error")
+  "default"
+}
+
+// Recover with another Task
+val recovered: Task[String] = Task {
+  dangerousOperation()
+}.onErrorHandleWith { error =>
+  Task.pure("default")
+}
+
+// Attempt (convert to Either)
+val attempted: Task[Either[Throwable, String]] = 
+  Task(dangerousOperation()).attempt
+
+// Retry with exponential backoff
+import scala.concurrent.duration._
+val retried: Task[String] = Task {
+  dangerousOperation()
+}.onErrorRestart(3)
+
+// Timeout
+val timedOut: Task[String] = Task {
+  longOperation()
+}.timeout(5.seconds)
+```
+
+```scala ZIO
+import zio._
+
+val program: Task[String] = ZIO.attempt {
+  dangerousOperation()
+}.catchAll { error =>
+  Console.printLine(s"Error: $error").orDie *>
+  ZIO.succeed("default")
+}
+
+// Recover with another ZIO
+val recovered: Task[String] = ZIO.attempt {
+  dangerousOperation()
+}.catchAll { error =>
+  ZIO.succeed("default")
+}
+
+// Attempt (convert to Either)
+val attempted: UIO[Either[Throwable, String]] = 
+  ZIO.attempt(dangerousOperation()).either
+
+// Retry with schedule
+val retried: Task[String] = ZIO.attempt {
+  dangerousOperation()
+}.retry(Schedule.recurs(3))
+
+// Timeout
+val timedOut: Task[Option[String]] = ZIO.attempt {
+  longOperation()
+}.timeout(5.seconds)
+```
+</CodeGroup>
+
+## Resource Management
+
+<CodeGroup>
+```scala Monix
+import monix.eval._
+import java.io._
+
+def readFile(path: String): Task[String] = {
+  Task {
+    new FileInputStream(path)
+  }.bracket { stream =>
+    Task {
+      val reader = new BufferedReader(new InputStreamReader(stream))
+      Iterator.continually(reader.readLine())
+        .takeWhile(_ != null)
+        .mkString("\n")
+    }
+  } { stream =>
+    Task(stream.close())
+  }
+}
+
+// bracketCase for more control
+import monix.eval.Task.Context
+
+def readFileWithCase(path: String): Task[String] = {
+  Task {
+    new FileInputStream(path)
+  }.bracketCase { stream =>
+    Task {
+      // read file
+    }
+  } { (stream, exitCase) =>
+    exitCase match {
+      case Context.Canceled => 
+        Task(println("Canceled")) >> Task(stream.close())
+      case Context.Error(e) => 
+        Task(println(s"Error: $e")) >> Task(stream.close())
+      case Context.Completed => 
+        Task(stream.close())
+    }
+  }
+}
+```
+
+```scala ZIO
+import zio._
+import java.io._
+
+def readFile(path: String): Task[String] = {
+  ZIO.acquireReleaseWith(
+    ZIO.attempt(new FileInputStream(path))
+  )(
+    stream => ZIO.succeed(stream.close())
+  ) { stream =>
+    ZIO.attempt {
+      val reader = new BufferedReader(new InputStreamReader(stream))
+      Iterator.continually(reader.readLine())
+        .takeWhile(_ != null)
+        .mkString("\n")
+    }
+  }
+}
+
+// acquireReleaseExitWith for more control
+def readFileWithExit(path: String): Task[String] = {
+  ZIO.acquireReleaseExitWith(
+    ZIO.attempt(new FileInputStream(path))
+  )(
+    (stream, exit) => exit match {
+      case Exit.Success(_) => 
+        ZIO.succeed(stream.close())
+      case Exit.Failure(cause) => 
+        Console.printLine(s"Failed: $cause").orDie *>
+        ZIO.succeed(stream.close())
+    }
+  ) { stream =>
+    ZIO.attempt {
+      // read file
+    }
+  }
+}
+
+// Or use scoped
+def readFileScoped(path: String): Task[String] = 
+  ZIO.scoped {
+    ZIO.fromAutoCloseable(ZIO.attempt(new FileInputStream(path))).flatMap { stream =>
+      ZIO.attempt {
+        val reader = new BufferedReader(new InputStreamReader(stream))
+        Iterator.continually(reader.readLine())
+          .takeWhile(_ != null)
+          .mkString("\n")
+      }
+    }
+  }
+```
+</CodeGroup>
+
+## Concurrency
+
+<CodeGroup>
+```scala Monix
+import monix.eval._
+import monix.execution.Scheduler.Implicits.global
+
+// Parallel execution
+val parallel: Task[(Int, String)] = 
+  Task.parZip2(
+    Task(compute1()),
+    Task(compute2())
+  )
+
+// Race
+val raced: Task[Either[Int, String]] = 
+  Task.raceMany(
+    List(
+      Task(compute1()).map(Left(_)),
+      Task(compute2()).map(Right(_))
+    )
+  )
+
+// Fork (start fiber)
+import monix.execution.CancelableFuture
+
+val forked: Task[Int] = for {
+  fiber <- Task(compute()).start
+  result <- Task.fromCancelableFuture(fiber)
+} yield result
+
+// MVar (one-shot async variable)
+import monix.execution.misc.MVar
+
+val program: Task[Int] = for {
+  mvar <- Task.eval(MVar.empty[Int])
+  _ <- Task(mvar.put(42)).start
+  value <- Task.eval(mvar.take)
+} yield value
+```
+
+```scala ZIO
+import zio._
+
+// Parallel execution
+val parallel: Task[(Int, String)] = 
+  ZIO.attempt(compute1()).zipPar(ZIO.attempt(compute2()))
+
+// Race
+val raced: Task[Either[Int, String]] = 
+  ZIO.attempt(compute1()).raceEither(ZIO.attempt(compute2()))
+
+// Fork (start fiber)
+val forked: Task[Int] = for {
+  fiber <- ZIO.attempt(compute()).fork
+  result <- fiber.join
+} yield result
+
+// Promise (one-shot async variable)
+val program: Task[Int] = for {
+  promise <- Promise.make[Throwable, Int]
+  _ <- promise.succeed(42).fork
+  value <- promise.await
+} yield value
+```
+</CodeGroup>
+
+## Fiber-Local State
+
+<CodeGroup>
+```scala Monix
+import monix.eval._
+import monix.execution.misc.Local
+import monix.execution.Scheduler.Implicits.global
+
+val program: Task[Unit] = for {
+  local <- Task.eval(Local(0))
+  _ <- Task {
+    local.update(_ + 1)
+    println(s"Value: ${local.get}")
+  }
+  // Start a fiber with inherited local state
+  fiber <- Task {
+    local.update(_ + 1)
+    println(s"Fiber value: ${local.get}")
+  }.start
+  _ <- Task.fromCancelableFuture(fiber)
+} yield ()
+```
+
+```scala ZIO
+import zio._
+
+val program: Task[Unit] = for {
+  fiberRef <- FiberRef.make(0)
+  _ <- fiberRef.update(_ + 1)
+  value <- fiberRef.get
+  _ <- Console.printLine(s"Value: $value")
+  // Start a fiber with inherited fiber-local state
+  fiber <- (
+    fiberRef.update(_ + 1) *>
+    fiberRef.get.flatMap(v => Console.printLine(s"Fiber value: $v"))
+  ).fork
+  _ <- fiber.join
+} yield ()
+```
+</CodeGroup>
+
+## Streaming with Observable/ZStream
+
+<CodeGroup>
+```scala Monix
+import monix.reactive._
+import monix.execution.Scheduler.Implicits.global
+
+// Create observable
+val observable: Observable[Int] = 
+  Observable.range(1, 100)
+
+// Transform
+val transformed: Observable[Int] = 
+  observable
+    .filter(_ % 2 == 0)
+    .map(_ * 2)
+    .take(10)
+
+// Async operations
+val effectful: Observable[Unit] = 
+  observable.mapEval { n =>
+    Task(println(s"Processing: $n"))
+  }
+
+// Consume
+val result: Task[List[Int]] = 
+  observable.toListL
+
+// Merge multiple streams
+val merged: Observable[Int] = 
+  Observable(observable, Observable.range(100, 200))
+    .merge
+
+// Buffer and batch
+val batched: Observable[Seq[Int]] = 
+  observable.bufferTimed(1.second)
+```
+
+```scala ZIO
+import zio._
+import zio.stream._
+
+// Create stream
+val stream: ZStream[Any, Nothing, Int] = 
+  ZStream.range(1, 100)
+
+// Transform
+val transformed: ZStream[Any, Nothing, Int] = 
+  stream
+    .filter(_ % 2 == 0)
+    .map(_ * 2)
+    .take(10)
+
+// Async operations
+val effectful: ZStream[Any, Throwable, Unit] = 
+  stream.mapZIO { n =>
+    Console.printLine(s"Processing: $n")
+  }
+
+// Consume
+val result: Task[Chunk[Int]] = 
+  stream.runCollect
+
+// Merge multiple streams
+val merged: ZStream[Any, Nothing, Int] = 
+  stream.merge(ZStream.range(100, 200))
+
+// Buffer and batch
+val batched: ZStream[Any, Nothing, Chunk[Int]] = 
+  stream.groupedWithin(100, 1.second)
+```
+</CodeGroup>
+
+## Backpressure and Flow Control
+
+<CodeGroup>
+```scala Monix
+import monix.reactive._
+import monix.execution.Scheduler.Implicits.global
+import monix.reactive.OverflowStrategy
+
+// Async boundary with buffer
+val buffered: Observable[Int] = 
+  Observable.range(1, 1000)
+    .asyncBoundary(OverflowStrategy.BackPressure(100))
+
+// Throttle
+val throttled: Observable[Int] = 
+  Observable.range(1, 1000)
+    .throttle(1.second, 10)
+
+// Sample (drop intermediate values)
+val sampled: Observable[Int] = 
+  Observable.range(1, 1000)
+    .sample(1.second)
+```
+
+```scala ZIO
+import zio._
+import zio.stream._
+
+// Buffer with bounded queue
+val buffered: ZStream[Any, Nothing, Int] = 
+  ZStream.range(1, 1000)
+    .buffer(100)
+
+// Throttle
+val throttled: ZStream[Any, Nothing, Int] = 
+  ZStream.range(1, 1000)
+    .throttleShape(10, 1.second)(_ => 1)
+
+// Debounce
+val debounced: ZStream[Any, Nothing, Int] = 
+  ZStream.range(1, 1000)
+    .debounce(1.second)
+```
+</CodeGroup>
+
+## Application Entry Point
+
+<CodeGroup>
+```scala Monix
+import monix.eval._
+import monix.execution.Scheduler
+import scala.concurrent.Await
+import scala.concurrent.duration._
+
+object MyApp extends App {
+  implicit val scheduler: Scheduler = 
+    Scheduler.global
+  
+  val program: Task[Unit] = for {
+    _ <- Task(println("Hello, Monix!"))
+    _ <- doWork()
+  } yield ()
+  
+  // Run the task
+  val future = program.runToFuture
+  Await.result(future, Duration.Inf)
+  
+  def doWork(): Task[Unit] = 
+    Task(println("Working..."))
+}
+```
+
+```scala ZIO
+import zio._
+
+object MyApp extends ZIOAppDefault {
+  def run = {
+    val program = for {
+      _ <- Console.printLine("Hello, ZIO!")
+      _ <- doWork()
+    } yield ()
+    
+    program
+  }
+  
+  def doWork(): Task[Unit] = 
+    ZIO.attempt(println("Working..."))
+}
+```
+</CodeGroup>
+
+## Schedulers and Execution Context
+
+<CodeGroup>
+```scala Monix
+import monix.eval._
+import monix.execution.Scheduler
+import java.util.concurrent.Executors
+
+// Custom scheduler
+val customScheduler: Scheduler = 
+  Scheduler(Executors.newFixedThreadPool(10))
+
+val program: Task[Unit] = 
+  Task(println("Running on custom scheduler"))
+    .executeOn(customScheduler)
+
+// IO-bound scheduler
+val ioScheduler: Scheduler = 
+  Scheduler.io()
+
+val ioTask: Task[String] = 
+  Task(readFromDisk())
+    .executeOn(ioScheduler)
+```
+
+```scala ZIO
+import zio._
+import java.util.concurrent.Executors
+
+// Custom executor
+val customExecutor = 
+  Executors.newFixedThreadPool(10)
+
+val program: Task[Unit] = 
+  Console.printLine("Running on custom executor")
+    .onExecutor(Executor.fromJavaExecutor(customExecutor))
+
+// Or use Blocking for blocking operations
+val blockingTask: Task[String] = 
+  ZIO.attemptBlocking(readFromDisk())
+```
+</CodeGroup>
+
+## Dependency Injection
+
+Monix doesn't have built-in dependency injection, while ZIO provides ZLayer:
+
+<CodeGroup>
+```scala Monix
+import monix.eval._
+
+// Typically using constructor injection or Reader monad
+trait Database {
+  def query(sql: String): Task[List[String]]
+}
+
+class PostgresDatabase extends Database {
+  def query(sql: String): Task[List[String]] = 
+    Task(/* execute query */)
+}
+
+trait UserService {
+  def getUser(id: Int): Task[User]
+}
+
+class UserServiceImpl(db: Database) extends UserService {
+  def getUser(id: Int): Task[User] = 
+    db.query(s"SELECT * FROM users WHERE id = $id")
+      .map(rows => parseUser(rows.head))
+}
+
+// Manual wiring
+val program: Task[User] = for {
+  db <- Task.pure(new PostgresDatabase)
+  service <- Task.pure(new UserServiceImpl(db))
+  user <- service.getUser(42)
+} yield user
+```
+
+```scala ZIO
+import zio._
+
+// Using ZLayer
+trait Database {
+  def query(sql: String): Task[List[String]]
+}
+
+object Database {
+  def query(sql: String): ZIO[Database, Throwable, List[String]] =
+    ZIO.serviceWithZIO[Database](_.query(sql))
+  
+  val live: ZLayer[Any, Nothing, Database] =
+    ZLayer.succeed(
+      new Database {
+        def query(sql: String): Task[List[String]] = 
+          ZIO.attempt(/* execute query */)
+      }
+    )
+}
+
+trait UserService {
+  def getUser(id: Int): Task[User]
+}
+
+object UserService {
+  def getUser(id: Int): ZIO[UserService, Throwable, User] =
+    ZIO.serviceWithZIO[UserService](_.getUser(id))
+  
+  val live: ZLayer[Database, Nothing, UserService] =
+    ZLayer {
+      for {
+        db <- ZIO.service[Database]
+      } yield new UserService {
+        def getUser(id: Int): Task[User] = 
+          db.query(s"SELECT * FROM users WHERE id = $id")
+            .map(rows => parseUser(rows.head))
+      }
+    }
+}
+
+// Automatic wiring
+val program: ZIO[Any, Throwable, User] = 
+  UserService.getUser(42).provide(
+    Database.live,
+    UserService.live
+  )
+```
+</CodeGroup>
+
+## Testing
+
+<CodeGroup>
+```scala Monix
+import monix.eval._
+import monix.execution.Scheduler.Implicits.global
+import org.scalatest.flatspec.AsyncFlatSpec
+import org.scalatest.matchers.should.Matchers
+
+class MyServiceSpec extends AsyncFlatSpec with Matchers {
+  "MyService" should "return correct result" in {
+    val result = myService.compute(42)
+    result.runToFuture.map(_ shouldBe 84)
+  }
+  
+  it should "handle errors" in {
+    val result = myService.computeWithError()
+    result.attempt.runToFuture.map(_.isLeft shouldBe true)
+  }
+}
+```
+
+```scala ZIO
+import zio._
+import zio.test._
+import zio.test.Assertion._
+
+object MyServiceSpec extends ZIOSpecDefault {
+  def spec = suite("MyService")(
+    test("should return correct result") {
+      for {
+        result <- myService.compute(42)
+      } yield assertTrue(result == 84)
+    },
+    
+    test("should handle errors") {
+      for {
+        result <- myService.computeWithError().exit
+      } yield assertTrue(result.isFailure)
+    }
+  )
+}
+```
+</CodeGroup>
+
+## Migration Strategy
+
+<Steps>
+  <Step title="Identify Task boundaries">
+    Find all places where Monix `Task` is used as the return type of functions.
+  </Step>
+  
+  <Step title="Convert Task to ZIO">
+    Replace `Task[A]` with `Task[A]` (which is `ZIO[Any, Throwable, A]` in ZIO).
+  </Step>
+  
+  <Step title="Update Observable to ZStream">
+    Convert Monix `Observable` to ZIO `ZStream` with similar combinators.
+  </Step>
+  
+  <Step title="Replace TaskLocal with FiberRef">
+    Convert fiber-local state from `TaskLocal` to `FiberRef`.
+  </Step>
+  
+  <Step title="Introduce ZLayer">
+    Add ZLayer for dependency injection where you have manual wiring.
+  </Step>
+  
+  <Step title="Update entry point">
+    Replace Monix's manual `runToFuture` calls with ZIO's `ZIOAppDefault`.
+  </Step>
+</Steps>
+
+## Common Gotchas
+
+<Warning>
+  **Scheduler vs Runtime**: Monix uses explicit `Scheduler` parameters, while ZIO uses an implicit `Runtime`. You don't need to pass schedulers around in ZIO.
+</Warning>
+
+<Warning>
+  **Cancellation**: Both support cancellation, but ZIO's interruption model is more sophisticated with automatic fiber interruption.
+</Warning>
+
+<Warning>
+  **Lazy vs Eager**: Some Monix constructors are eager while ZIO is consistently lazy. Be mindful of evaluation timing.
+</Warning>
+
+## Additional Resources
+
+<CardGroup cols={2}>
+  <Card title="ZIO Documentation" icon="book" href="/core/zio-effect">
+    Learn more about ZIO core concepts
+  </Card>
+  <Card title="ZStream Guide" icon="water" href="/streaming/zstream">
+    Master streaming with ZStream
+  </Card>
+  <Card title="Fiber Management" icon="arrows-split-up-and-left" href="/concurrency/fibers">
+    Learn about ZIO's fiber model
+  </Card>
+  <Card title="Testing Guide" icon="flask" href="/testing/overview">
+    Test your ZIO applications
+  </Card>
+</CardGroup>

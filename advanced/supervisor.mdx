@@ -1,0 +1,387 @@
+---
+title: "Supervisor"
+description: "Monitor and manage fiber execution with supervisors in ZIO"
+---
+
+# Supervisor
+
+A `Supervisor[A]` is allowed to supervise the launching and termination of fibers, producing some visible value of type `A` from the supervision. Supervisors enable observability, monitoring, and custom fiber management strategies in ZIO applications.
+
+## Overview
+
+Supervisors intercept fiber lifecycle events:
+
+- **Fiber start** - When a fiber begins execution
+- **Fiber end** - When a fiber completes (success, failure, or interruption)
+- **Fiber suspend** - When a fiber is suspended
+- **Fiber resume** - When a fiber resumes
+
+They produce a value that reflects the current state of supervision, such as a collection of running fibers or aggregate metrics.
+
+<Note>
+Supervisors are non-intrusive - they observe fiber execution without affecting the computation itself.
+</Note>
+
+## Core Concepts
+
+### Basic Supervision
+
+Create a supervisor that tracks active fibers:
+
+```scala
+import zio._
+
+for {
+  supervisor <- Supervisor.track(weak = false)
+  _          <- ZIO.succeed(42).supervised(supervisor).fork
+  _          <- ZIO.succeed(99).supervised(supervisor).fork
+  fibers     <- supervisor.value
+  _          <- Console.printLine(s"Active fibers: ${fibers.size}")
+} yield ()
+```
+
+### The Supervision Value
+
+Supervisors produce values that change as fibers are supervised:
+
+```scala
+val countingSupervisor: Supervisor[Long] = 
+  Supervisor.track(weak = false).map(_.size.toLong)
+
+for {
+  count1 <- countingSupervisor.value // 0
+  _      <- task.supervised(countingSupervisor).fork
+  count2 <- countingSupervisor.value // 1
+} yield ()
+```
+
+## Built-in Supervisors
+
+### Tracking Supervisor
+
+Tracks all supervised fibers in a collection:
+
+```scala
+for {
+  supervisor <- Supervisor.track(weak = false)
+  fiber1     <- task1.supervised(supervisor).fork
+  fiber2     <- task2.supervised(supervisor).fork
+  fibers     <- supervisor.value
+  _          <- ZIO.foreachDiscard(fibers)(_.interrupt)
+} yield ()
+```
+
+<Tip>
+Set `weak = true` to use weak references, allowing garbage collection of completed fibers.
+</Tip>
+
+### No-Op Supervisor
+
+A supervisor that does nothing:
+
+```scala
+val noOp: Supervisor[Unit] = Supervisor.none
+```
+
+### Custom Supervisors
+
+Create supervisors from ZIO effects:
+
+```scala
+val customSupervisor: Supervisor[String] = 
+  Supervisor.fromZIO(ZIO.succeed("Custom value"))
+```
+
+## Lifecycle Hooks
+
+Supervisors can implement hooks for each lifecycle event:
+
+```scala
+new Supervisor[Unit] {
+  def value(implicit trace: Trace): UIO[Unit] = 
+    ZIO.unit
+
+  def onStart[R, E, A](
+    environment: ZEnvironment[R],
+    effect: ZIO[R, E, A],
+    parent: Option[Fiber.Runtime[Any, Any]],
+    fiber: Fiber.Runtime[E, A]
+  )(implicit unsafe: Unsafe): Unit = {
+    println(s"Fiber ${fiber.id} started")
+  }
+
+  def onEnd[R, E, A](
+    value: Exit[E, A], 
+    fiber: Fiber.Runtime[E, A]
+  )(implicit unsafe: Unsafe): Unit = {
+    println(s"Fiber ${fiber.id} ended with $value")
+  }
+
+  def onSuspend[E, A](
+    fiber: Fiber.Runtime[E, A]
+  )(implicit unsafe: Unsafe): Unit = {
+    println(s"Fiber ${fiber.id} suspended")
+  }
+
+  def onResume[E, A](
+    fiber: Fiber.Runtime[E, A]
+  )(implicit unsafe: Unsafe): Unit = {
+    println(s"Fiber ${fiber.id} resumed")
+  }
+}
+```
+
+## Combining Supervisors
+
+Supervisors compose with the `++` operator:
+
+```scala
+for {
+  metrics  <- Supervisor.track(weak = false)
+  logger   <- Supervisor.fromZIO(ZIO.unit)
+  combined = metrics ++ logger
+  _        <- task.supervised(combined).fork
+  (fibers, _) <- combined.value
+} yield fibers
+```
+
+The combined supervisor produces tuples of both values.
+
+## Practical Examples
+
+### Fiber Metrics Collector
+
+```scala
+import zio._
+import java.util.concurrent.atomic.AtomicLong
+
+class MetricsSupervisor extends Supervisor[(Long, Long, Long)] {
+  private val started = new AtomicLong(0)
+  private val succeeded = new AtomicLong(0)
+  private val failed = new AtomicLong(0)
+
+  def value(implicit trace: Trace): UIO[(Long, Long, Long)] =
+    ZIO.succeed((
+      started.get,
+      succeeded.get,
+      failed.get
+    ))
+
+  def onStart[R, E, A](
+    environment: ZEnvironment[R],
+    effect: ZIO[R, E, A],
+    parent: Option[Fiber.Runtime[Any, Any]],
+    fiber: Fiber.Runtime[E, A]
+  )(implicit unsafe: Unsafe): Unit = {
+    started.incrementAndGet()
+  }
+
+  def onEnd[R, E, A](
+    value: Exit[E, A],
+    fiber: Fiber.Runtime[E, A]
+  )(implicit unsafe: Unsafe): Unit = {
+    value match {
+      case Exit.Success(_) => succeeded.incrementAndGet()
+      case Exit.Failure(_) => failed.incrementAndGet()
+    }
+  }
+}
+
+val program = for {
+  supervisor <- ZIO.succeed(new MetricsSupervisor)
+  _          <- ZIO.foreachPar((1 to 100).toList) { i =>
+                  ZIO.succeed(i * 2).supervised(supervisor).fork
+                }
+  metrics    <- supervisor.value
+  _          <- Console.printLine(s"Metrics: $metrics")
+} yield ()
+```
+
+### Fiber Lifecycle Logger
+
+```scala
+class LoggingSupervisor extends Supervisor[Unit] {
+  def value(implicit trace: Trace): UIO[Unit] = ZIO.unit
+
+  def onStart[R, E, A](
+    environment: ZEnvironment[R],
+    effect: ZIO[R, E, A],
+    parent: Option[Fiber.Runtime[Any, Any]],
+    fiber: Fiber.Runtime[E, A]
+  )(implicit unsafe: Unsafe): Unit = {
+    println(s"[START] Fiber ${fiber.id}")
+    parent.foreach(p => println(s"  Parent: ${p.id}"))
+  }
+
+  def onEnd[R, E, A](
+    value: Exit[E, A],
+    fiber: Fiber.Runtime[E, A]
+  )(implicit unsafe: Unsafe): Unit = {
+    value match {
+      case Exit.Success(a) =>
+        println(s"[END] Fiber ${fiber.id} succeeded: $a")
+      case Exit.Failure(cause) =>
+        println(s"[END] Fiber ${fiber.id} failed: ${cause.prettyPrint}")
+    }
+  }
+}
+```
+
+### Resource Leak Detector
+
+```scala
+import scala.collection.concurrent.TrieMap
+
+class LeakDetector extends Supervisor[Set[Fiber.Runtime[Any, Any]]] {
+  private val running = TrieMap.empty[Fiber.Id, Fiber.Runtime[Any, Any]]
+  private val startTime = TrieMap.empty[Fiber.Id, Long]
+
+  def value(implicit trace: Trace): UIO[Set[Fiber.Runtime[Any, Any]]] = {
+    ZIO.succeed {
+      val now = System.currentTimeMillis()
+      running.filter { case (id, _) =>
+        startTime.get(id).exists(start => now - start > 60000)
+      }.values.toSet
+    }
+  }
+
+  def onStart[R, E, A](
+    environment: ZEnvironment[R],
+    effect: ZIO[R, E, A],
+    parent: Option[Fiber.Runtime[Any, Any]],
+    fiber: Fiber.Runtime[E, A]
+  )(implicit unsafe: Unsafe): Unit = {
+    running.put(fiber.id, fiber)
+    startTime.put(fiber.id, System.currentTimeMillis())
+  }
+
+  def onEnd[R, E, A](
+    value: Exit[E, A],
+    fiber: Fiber.Runtime[E, A]
+  )(implicit unsafe: Unsafe): Unit = {
+    running.remove(fiber.id)
+    startTime.remove(fiber.id)
+  }
+}
+
+val detectLeaks = for {
+  detector <- ZIO.succeed(new LeakDetector)
+  _        <- longRunningTask.supervised(detector).fork
+  _        <- ZIO.sleep(65.seconds)
+  leaks    <- detector.value
+  _        <- ZIO.when(leaks.nonEmpty) {
+                Console.printLine(s"Leaked ${leaks.size} fibers")
+              }
+} yield ()
+```
+
+### Circuit Breaker Supervisor
+
+```scala
+import java.util.concurrent.atomic.AtomicInteger
+
+class CircuitBreakerSupervisor(
+  threshold: Int,
+  resetTimeout: Duration
+) extends Supervisor[Boolean] {
+  private val failures = new AtomicInteger(0)
+  private val lastFailure = new AtomicReference[Option[Instant]](None)
+
+  def value(implicit trace: Trace): UIO[Boolean] = {
+    ZIO.succeed {
+      failures.get() < threshold ||
+      lastFailure.get().exists { last =>
+        Duration.between(last, Instant.now()).compareTo(
+          resetTimeout.asJava
+        ) > 0
+      }
+    }
+  }
+
+  def onEnd[R, E, A](
+    exit: Exit[E, A],
+    fiber: Fiber.Runtime[E, A]
+  )(implicit unsafe: Unsafe): Unit = {
+    exit match {
+      case Exit.Failure(_) =>
+        failures.incrementAndGet()
+        lastFailure.set(Some(Instant.now()))
+      case Exit.Success(_) =>
+        if (failures.get() > 0) {
+          failures.decrementAndGet()
+        }
+    }
+  }
+}
+```
+
+## Supervisor Patterns
+
+### Hierarchical Supervision
+
+```scala
+for {
+  rootSupervisor  <- Supervisor.track(weak = false)
+  childSupervisor <- Supervisor.track(weak = false)
+  _               <- parentTask
+                       .supervised(rootSupervisor)
+                       .fork
+  _               <- childTask
+                       .supervised(childSupervisor)
+                       .supervised(rootSupervisor)
+                       .fork
+} yield ()
+```
+
+### Conditional Supervision
+
+```scala
+def supervisedIf[R, E, A](
+  condition: Boolean,
+  supervisor: Supervisor[Any]
+)(zio: ZIO[R, E, A]): ZIO[R, E, A] = {
+  if (condition) zio.supervised(supervisor)
+  else zio
+}
+```
+
+## Performance Considerations
+
+- Weak references (`weak = true`) reduce memory pressure for long-running applications
+- Supervisor hooks run synchronously on the fiber's thread
+- Keep hook implementations fast to avoid blocking fiber execution
+- Use atomic operations in custom supervisors for thread-safety
+
+## Best Practices
+
+<CardGroup cols={2}>
+  <Card title="Non-Blocking Hooks" icon="gauge-high">
+    Keep `onStart`, `onEnd`, etc. fast and non-blocking.
+  </Card>
+  
+  <Card title="Weak References" icon="memory">
+    Use `weak = true` for production to prevent memory leaks.
+  </Card>
+  
+  <Card title="Compose Supervisors" icon="layer-group">
+    Use `++` to combine multiple supervision concerns.
+  </Card>
+  
+  <Card title="Thread Safety" icon="lock">
+    Use concurrent data structures in custom supervisors.
+  </Card>
+</CardGroup>
+
+## Common Use Cases
+
+1. **Observability** - Tracking active fibers for monitoring dashboards
+2. **Debugging** - Logging fiber lifecycle events during development
+3. **Resource Management** - Detecting leaked or long-running fibers
+4. **Circuit Breaking** - Monitoring failure rates for resilience patterns
+5. **Metrics Collection** - Gathering runtime statistics for performance analysis
+
+## See Also
+
+- [Fiber](/concurrency/fiber) - Understanding ZIO's concurrency model
+- [Observability](/advanced/metrics) - Metrics and monitoring patterns
+- API Reference: `Supervisor.scala:30`

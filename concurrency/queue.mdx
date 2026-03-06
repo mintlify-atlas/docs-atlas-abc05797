@@ -1,0 +1,394 @@
+---
+title: Queue
+description: Asynchronous, type-safe queues for producer-consumer patterns with backpressure, dropping, and sliding strategies.
+---
+
+A **Queue** is a lightweight, asynchronous queue into which values can be enqueued and from which elements can be dequeued. Queues provide a powerful primitive for coordinating multiple concurrent fibers in producer-consumer patterns.
+
+## Creating Queues
+
+### Bounded Queue
+
+A bounded queue applies backpressure when full:
+
+```scala
+import zio._
+
+// Creates a bounded queue with capacity 100
+val queue: UIO[Queue[Int]] = Queue.bounded[Int](100)
+```
+
+<Tip>
+  For best performance, use power-of-2 capacities (e.g., 16, 32, 64, 128) which utilize an optimized ring buffer implementation.
+</Tip>
+
+### Unbounded Queue
+
+An unbounded queue never blocks on enqueue:
+
+```scala
+import zio._
+
+val queue: UIO[Queue[Int]] = Queue.unbounded[Int]
+```
+
+### Dropping Queue
+
+A dropping queue drops new elements when full:
+
+```scala
+import zio._
+
+val queue: UIO[Queue[Int]] = Queue.dropping[Int](100)
+```
+
+### Sliding Queue
+
+A sliding queue drops old elements when full to make room for new ones:
+
+```scala
+import zio._
+
+val queue: UIO[Queue[Int]] = Queue.sliding[Int](100)
+```
+
+## Enqueue Operations
+
+### Single Element
+
+```scala
+val queue: Queue[Int] = ???
+
+// Offer element (may suspend if full with backpressure)
+val offered: UIO[Boolean] = queue.offer(42)
+// Returns true if element was added, false otherwise
+```
+
+### Multiple Elements
+
+```scala
+val queue: Queue[Int] = ???
+
+// Offer multiple elements
+val surplus: UIO[Chunk[Int]] = queue.offerAll(List(1, 2, 3, 4, 5))
+// Returns elements that couldn't be added
+```
+
+<Note>
+  With backpressure queues, `offer` and `offerAll` will suspend until space becomes available. With dropping or sliding queues, they return immediately.
+</Note>
+
+## Dequeue Operations
+
+### Take Single Element
+
+Remove and return the next element:
+
+```scala
+val queue: Queue[Int] = ???
+
+// Take blocks until an element is available
+val element: UIO[Int] = queue.take
+```
+
+### Take Multiple Elements
+
+```scala
+val queue: Queue[Int] = ???
+
+// Take all available elements (non-blocking)
+val elements: UIO[Chunk[Int]] = queue.takeAll
+
+// Take up to N elements
+val upToN: UIO[Chunk[Int]] = queue.takeUpTo(10)
+```
+
+### Poll (Non-blocking)
+
+```scala
+val queue: Queue[Int] = ???
+
+// Returns None if queue is empty, Some(value) otherwise
+val maybeElement: UIO[Option[Int]] = queue.poll
+```
+
+## Queue Properties
+
+```scala
+val queue: Queue[Int] = ???
+
+// Get current size
+val size: UIO[Int] = queue.size
+
+// Check if empty
+val empty: UIO[Boolean] = queue.isEmpty
+
+// Check if full
+val full: UIO[Boolean] = queue.isFull
+
+// Get capacity
+val capacity: Int = queue.capacity
+```
+
+## Producer-Consumer Pattern
+
+### Basic Example
+
+```scala
+import zio._
+
+def producer(queue: Queue[Int]): UIO[Unit] =
+  ZIO.foreach(1 to 10) { i =>
+    queue.offer(i) *> ZIO.sleep(100.millis)
+  }.unit
+
+def consumer(queue: Queue[Int]): UIO[Unit] =
+  queue.take.flatMap { item =>
+    ZIO.succeed(println(s"Consumed: $item"))
+  }.forever
+
+val program = for {
+  queue    <- Queue.bounded[Int](5)
+  _        <- producer(queue).fork
+  fiber    <- consumer(queue).fork
+  _        <- ZIO.sleep(2.seconds)
+  _        <- fiber.interrupt
+} yield ()
+```
+
+### Multiple Producers and Consumers
+
+```scala
+import zio._
+
+def producer(id: Int, queue: Queue[Int]): UIO[Unit] =
+  ZIO.foreach(1 to 5) { i =>
+    val value = id * 100 + i
+    queue.offer(value) *> 
+      ZIO.succeed(println(s"Producer $id: offered $value"))
+  }.unit
+
+def consumer(id: Int, queue: Queue[Int]): UIO[Unit] =
+  queue.take.flatMap { item =>
+    ZIO.succeed(println(s"Consumer $id: consumed $item")) *>
+      ZIO.sleep(Random.nextIntBetween(50, 150).millis)
+  }.forever
+
+val program = for {
+  queue     <- Queue.bounded[Int](10)
+  producers <- ZIO.foreach(1 to 3)(id => producer(id, queue).fork)
+  consumers <- ZIO.foreach(1 to 2)(id => consumer(id, queue).fork)
+  _         <- ZIO.sleep(5.seconds)
+  _         <- ZIO.foreachDiscard(consumers)(_.interrupt)
+  _         <- ZIO.foreachDiscard(producers)(_.join)
+} yield ()
+```
+
+## Backpressure Strategies
+
+### Backpressure (Default)
+
+```scala
+import zio._
+
+// Producers wait when queue is full
+val queue = Queue.bounded[Int](2)
+
+val program = for {
+  q <- queue
+  _ <- q.offer(1) // succeeds immediately
+  _ <- q.offer(2) // succeeds immediately  
+  f <- q.offer(3).fork // suspends, queue is full
+  _ <- ZIO.sleep(1.second)
+  _ <- q.take // makes space
+  _ <- f.join // now succeeds
+} yield ()
+```
+
+### Dropping Strategy
+
+```scala
+import zio._
+
+// New elements are dropped when full
+val queue = Queue.dropping[Int](2)
+
+val program = for {
+  q <- queue
+  _ <- q.offer(1) // true
+  _ <- q.offer(2) // true
+  _ <- q.offer(3) // false, dropped
+} yield ()
+```
+
+### Sliding Strategy
+
+```scala
+import zio._
+
+// Old elements are dropped when full
+val queue = Queue.sliding[Int](2)
+
+val program = for {
+  q <- queue
+  _ <- q.offer(1) // queue: [1]
+  _ <- q.offer(2) // queue: [1, 2]
+  _ <- q.offer(3) // queue: [2, 3] (1 dropped)
+  _ <- q.offer(4) // queue: [3, 4] (2 dropped)
+  a <- q.take     // a = 3
+  b <- q.take     // b = 4
+} yield (a, b)
+```
+
+## Shutdown Coordination
+
+### Graceful Shutdown
+
+```scala
+import zio._
+
+val program = for {
+  queue    <- Queue.bounded[Int](10)
+  consumer <- queue.take.forever.fork
+  _        <- ZIO.foreach(1 to 5)(i => queue.offer(i))
+  _        <- queue.shutdown // Signals shutdown
+  _        <- consumer.join.catchAll(_ => ZIO.unit)
+} yield ()
+```
+
+### Await Shutdown
+
+```scala
+val queue: Queue[Int] = ???
+
+val program = for {
+  fiber <- queue.awaitShutdown.fork
+  _     <- ZIO.sleep(2.seconds)
+  _     <- queue.shutdown
+  _     <- fiber.join
+} yield ()
+```
+
+### Check Shutdown Status
+
+```scala
+val queue: Queue[Int] = ???
+
+val isShutdown: UIO[Boolean] = queue.isShutdown
+```
+
+## Work Distribution Pattern
+
+```scala
+import zio._
+
+case class Task(id: Int, work: UIO[Unit])
+
+def worker(id: Int, queue: Queue[Task]): UIO[Unit] =
+  queue.take.flatMap { task =>
+    ZIO.succeed(println(s"Worker $id: processing task ${task.id}")) *>
+      task.work
+  }.forever
+
+val program = for {
+  queue   <- Queue.bounded[Task](100)
+  workers <- ZIO.foreach(1 to 5)(id => worker(id, queue).fork)
+  
+  // Submit tasks
+  _ <- ZIO.foreach(1 to 20) { i =>
+    val task = Task(i, ZIO.sleep(Random.nextIntBetween(100, 500).millis))
+    queue.offer(task)
+  }
+  
+  // Wait for completion
+  _ <- ZIO.sleep(10.seconds)
+  _ <- ZIO.foreachDiscard(workers)(_.interrupt)
+} yield ()
+```
+
+## Buffering Pattern
+
+```scala
+import zio._
+
+def buffer[A](stream: ZStream[Any, Nothing, A], size: Int): ZStream[Any, Nothing, A] =
+  ZStream.unwrap {
+    Queue.bounded[A](size).map { queue =>
+      val producer = stream.foreach(queue.offer).ensuring(queue.shutdown).fork
+      ZStream.fromQueue(queue).ensuring(producer.flatMap(_.interrupt))
+    }
+  }
+```
+
+## Rate Limiting Pattern
+
+```scala
+import zio._
+
+class RateLimiter(permits: Int, period: Duration) {
+  private val queue: UIO[Queue[Unit]] = Queue.bounded[Unit](permits)
+  
+  private val refill: UIO[Unit] =
+    queue.flatMap { q =>
+      q.offer(()).repeatN(permits - 1).schedule(Schedule.fixed(period))
+    }.fork.unit
+  
+  def acquire: UIO[Unit] = 
+    queue.flatMap(_.take)
+  
+  def withPermit[R, E, A](effect: ZIO[R, E, A]): ZIO[R, E, A] =
+    acquire *> effect
+}
+
+val program = for {
+  limiter <- ZIO.succeed(new RateLimiter(10, 1.second))
+  _       <- ZIO.foreach(1 to 100) { i =>
+               limiter.withPermit {
+                 ZIO.succeed(println(s"Request $i"))
+               }
+             }
+} yield ()
+```
+
+## Performance Considerations
+
+<Card title="Capacity Sizing" icon="ruler">
+  Choose power-of-2 capacities (16, 32, 64, 128) for optimal performance. The underlying ring buffer implementation is optimized for these sizes.
+</Card>
+
+<Card title="Strategy Selection" icon="list-check">
+  - **Bounded**: When backpressure is important and you can't lose data
+  - **Dropping**: When losing new data is acceptable (e.g., metrics, logs)
+  - **Sliding**: When you want the most recent data (e.g., UI updates)
+  - **Unbounded**: When memory is abundant and you need maximum throughput
+</Card>
+
+<Warning>
+  Unbounded queues can lead to memory issues if producers are consistently faster than consumers. Always prefer bounded queues with an appropriate strategy.
+</Warning>
+
+## Dequeue and Enqueue Interfaces
+
+Queues implement both `Enqueue` and `Dequeue` interfaces, which can be used separately:
+
+```scala
+import zio._
+
+def producer(enqueue: Enqueue[Int]): UIO[Unit] =
+  ZIO.foreach(1 to 10)(enqueue.offer).unit
+
+def consumer(dequeue: Dequeue[Int]): UIO[Unit] =
+  dequeue.take.flatMap(item => ZIO.succeed(println(item))).forever
+
+val program = for {
+  queue <- Queue.bounded[Int](5)
+  _     <- producer(queue).fork
+  fiber <- consumer(queue).fork
+  _     <- ZIO.sleep(2.seconds)
+  _     <- fiber.interrupt
+} yield ()
+```
+
+<Tip>
+  Separating `Enqueue` and `Dequeue` interfaces allows you to pass only the necessary capabilities to different parts of your code, improving type safety and encapsulation.
+</Tip>

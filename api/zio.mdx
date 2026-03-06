@@ -1,0 +1,451 @@
+---
+title: "ZIO[R, E, A]"
+description: "The core ZIO effect type for describing asynchronous, concurrent workflows"
+---
+
+## Overview
+
+A `ZIO[R, E, A]` value is an immutable value (called an "effect") that describes an async, concurrent workflow. In order to be executed, the workflow requires a value of type `ZEnvironment[R]`, and when executed, the workflow will either produce a failure of type `E`, or a success of type `A`.
+
+ZIO effects may informally be thought of as functions of the following form:
+
+```scala
+ZEnvironment[R] => Either[E, A]
+```
+
+ZIO effects model resourceful interaction with the outside world, including synchronous, asynchronous, concurrent, and parallel interaction.
+
+## Type Parameters
+
+<ParamField path="R" type="type">
+  The environment required by the effect. Use `Any` if no specific environment is required.
+</ParamField>
+
+<ParamField path="E" type="type">
+  The error type that the effect can fail with. Use `Nothing` if the effect cannot fail.
+</ParamField>
+
+<ParamField path="A" type="type">
+  The success type that the effect produces upon successful completion.
+</ParamField>
+
+## Type Definition
+
+```scala
+sealed trait ZIO[-R, +E, +A]
+```
+
+## Creating Effects
+
+### succeed
+
+```scala
+def succeed[A](a: => A): UIO[A]
+```
+
+Creates an effect that succeeds with the specified value.
+
+<ParamField path="a" type="A">
+  The value to succeed with
+</ParamField>
+
+**Example:**
+```scala
+val effect = ZIO.succeed(42)
+```
+
+### fail
+
+```scala
+def fail[E](error: => E): IO[E, Nothing]
+```
+
+Returns an effect that models failure with the specified error. The moral equivalent of `throw` for pure code.
+
+<ParamField path="error" type="E">
+  The error to fail with
+</ParamField>
+
+**Example:**
+```scala
+val effect = ZIO.fail("Something went wrong")
+```
+
+### attempt
+
+```scala
+def attempt[A](a: => A): Task[A]
+```
+
+Imports a synchronous effect that may throw into a pure ZIO effect.
+
+**Example:**
+```scala
+val effect = ZIO.attempt(scala.io.Source.fromFile("data.txt").mkString)
+```
+
+### async
+
+```scala
+def async[R, E, A](
+  register: (ZIO[R, E, A] => Unit) => Any
+): ZIO[R, E, A]
+```
+
+Imports an asynchronous effect into a pure ZIO effect. The callback function must be called exactly once.
+
+**Example:**
+```scala
+ZIO.async[Any, Throwable, String] { callback =>
+  fetchDataAsync { result =>
+    callback(ZIO.succeed(result))
+  }
+}
+```
+
+### environment
+
+```scala
+def environment[R]: URIO[R, ZEnvironment[R]]
+```
+
+Accesses the whole environment of the effect.
+
+### environmentWith
+
+```scala
+def environmentWith[R]: EnvironmentWithPartiallyApplied[R]
+```
+
+Accesses the environment of the effect to produce a value.
+
+**Example:**
+```scala
+val getName = ZIO.environmentWith[Database](_.get.getName)
+```
+
+## Transforming Effects
+
+### map
+
+```scala
+def map[B](f: A => B): ZIO[R, E, B]
+```
+
+Transforms the success value of this effect with the specified function.
+
+**Example:**
+```scala
+val doubled = ZIO.succeed(21).map(_ * 2) // ZIO[Any, Nothing, Int]
+```
+
+### flatMap
+
+```scala
+def flatMap[R1 <: R, E1 >: E, B](k: A => ZIO[R1, E1, B]): ZIO[R1, E1, B]
+```
+
+Returns an effect that models the execution of this effect, followed by the passing of its value to the specified continuation function `k`, followed by the effect that it returns.
+
+**Example:**
+```scala
+val parsed = readFile("foo.txt").flatMap(file => parseFile(file))
+```
+
+### mapError
+
+```scala
+def mapError[E2](f: E => E2): ZIO[R, E2, A]
+```
+
+Transforms the error value of this effect with the specified function.
+
+**Example:**
+```scala
+val effect = ZIO.fail(404).mapError(code => s"Error code: $code")
+```
+
+### as
+
+```scala
+def as[B](b: => B): ZIO[R, E, B]
+```
+
+Maps the success value of this effect to the specified constant value.
+
+**Example:**
+```scala
+val effect = readFile("log.txt").as(true)
+```
+
+### zip
+
+```scala
+def zip[R1 <: R, E1 >: E, B](that: => ZIO[R1, E1, B]): ZIO[R1, E1, (A, B)]
+```
+
+Sequentially zips this effect with the specified effect, combining their results into a tuple.
+
+**Example:**
+```scala
+val combined = getUser <*> getAddress // ZIO[R, E, (User, Address)]
+```
+
+## Sequencing Effects
+
+### *>
+
+```scala
+def *>[R1 <: R, E1 >: E, B](that: => ZIO[R1, E1, B]): ZIO[R1, E1, B]
+```
+
+A variant of `flatMap` that ignores the value produced by this effect.
+
+**Example:**
+```scala
+val program = printLine("Hello") *> printLine("World")
+```
+
+### `<*` Operator
+
+```scala
+def <*[R1 <: R, E1 >: E, B](that: => ZIO[R1, E1, B]): ZIO[R1, E1, A]
+```
+
+Sequences the specified effect after this effect, but ignores the value produced by the effect.
+
+## Error Handling
+
+### catchAll
+
+```scala
+def catchAll[R1 <: R, E2, A1 >: A](
+  h: E => ZIO[R1, E2, A1]
+): ZIO[R1, E2, A1]
+```
+
+Recovers from all errors.
+
+**Example:**
+```scala
+openFile("config.json").catchAll(_ => ZIO.succeed(defaultConfig))
+```
+
+### catchSome
+
+```scala
+def catchSome[R1 <: R, E1 >: E, A1 >: A](
+  pf: PartialFunction[E, ZIO[R1, E1, A1]]
+): ZIO[R1, E1, A1]
+```
+
+Recovers from some or all of the error cases.
+
+**Example:**
+```scala
+openFile("data.json").catchSome {
+  case _: FileNotFoundException => openFile("backup.json")
+}
+```
+
+### orElse
+
+```scala
+def orElse[R1 <: R, E2, A1 >: A](
+  that: => ZIO[R1, E2, A1]
+): ZIO[R1, E2, A1]
+```
+
+Executes this effect and returns its value, if it succeeds, but otherwise executes the specified effect.
+
+### either
+
+```scala
+def either: URIO[R, Either[E, A]]
+```
+
+Returns an effect whose failure and success have been lifted into an `Either`. The resulting effect cannot fail.
+
+**Example:**
+```scala
+val result: UIO[Either[String, Int]] = parseNumber("42").either
+```
+
+### orDie
+
+```scala
+def orDie(implicit ev1: E <:< Throwable, ev2: CanFail[E]): ZIO[R, Nothing, A]
+```
+
+Keeps none of the errors, and terminates the fiber with them, using the specified function to convert the `E` into a `Throwable`.
+
+## Parallelism
+
+### zipPar
+
+```scala
+def zipPar[R1 <: R, E1 >: E, B](that: => ZIO[R1, E1, B]): ZIO[R1, E1, (A, B)]
+```
+
+Returns an effect that executes both this effect and the specified effect, in parallel, combining their results into a tuple.
+
+### `<&>` Operator
+
+```scala
+def <&>[R1 <: R, E1 >: E, B](that: => ZIO[R1, E1, B]): ZIO[R1, E1, (A, B)]
+```
+
+Returns an effect that executes both this effect and the specified effect, in parallel, combining their results into a tuple.
+
+### &>
+
+```scala
+def &>[R1 <: R, E1 >: E, B](that: => ZIO[R1, E1, B]): ZIO[R1, E1, B]
+```
+
+Returns an effect that executes both this effect and the specified effect, in parallel, returning result of provided effect.
+
+### race
+
+```scala
+def race[R1 <: R, E1 >: E, A1 >: A](that: => ZIO[R1, E1, A1]): ZIO[R1, E1, A1]
+```
+
+Returns an effect that races this effect with the specified effect, returning the first result to complete, whether by success or failure.
+
+## Resource Management
+
+### ensuring
+
+```scala
+def ensuring[R1 <: R](finalizer: => URIO[R1, Any]): ZIO[R1, E, A]
+```
+
+Returns an effect that, if this effect starts execution, then the specified `finalizer` is guaranteed to begin execution, whether this effect succeeds, fails, or is interrupted.
+
+### onExit
+
+```scala
+def onExit[R1 <: R](cleanup: Exit[E, A] => URIO[R1, Any]): ZIO[R1, E, A]
+```
+
+Ensures that a cleanup function runs when this effect completes, with access to the exit value.
+
+## Concurrency
+
+### fork
+
+```scala
+def fork: URIO[R, Fiber.Runtime[E, A]]
+```
+
+Returns an effect that forks this effect into its own separate fiber, returning the fiber immediately, without waiting for it to begin executing the effect.
+
+**Example:**
+```scala
+for {
+  fiber <- subtask.fork
+  // Do other work...
+  a <- fiber.join
+} yield a
+```
+
+### forkDaemon
+
+```scala
+def forkDaemon: URIO[R, Fiber.Runtime[E, A]]
+```
+
+Forks this effect into a daemon fiber. The fiber will not be automatically interrupted when the parent fiber terminates.
+
+### interrupt
+
+```scala
+def interrupt: UIO[Exit[E, A]]
+```
+
+Interrupts the effect.
+
+## Timeouts
+
+### timeout
+
+```scala
+def timeout(d: => Duration): ZIO[R, E, Option[A]]
+```
+
+Returns an effect that will timeout this effect, returning `None` if the timeout elapses before the effect has produced a value.
+
+**Example:**
+```scala
+val result = longRunningTask.timeout(5.seconds)
+```
+
+### timeoutFail
+
+```scala
+def timeoutFail[E1 >: E](e: => E1)(d: => Duration): ZIO[R, E1, A]
+```
+
+The same as `timeout`, but instead of producing a `None` in the event of timeout, it will produce the specified error.
+
+## Debugging
+
+### tap
+
+```scala
+def tap[R1 <: R, E1 >: E](f: A => ZIO[R1, E1, Any]): ZIO[R1, E1, A]
+```
+
+Returns an effect that effectfully "peeks" at the success of this effect.
+
+**Example:**
+```scala
+readFile("data.json").tap(content => printLine(s"Read: $content"))
+```
+
+### tapError
+
+```scala
+def tapError[R1 <: R, E1 >: E](
+  f: E => ZIO[R1, E1, Any]
+): ZIO[R1, E1, A]
+```
+
+Returns an effect that effectfully "peeks" at the failure of this effect.
+
+### debug
+
+```scala
+def debug: ZIO[R, E, A]
+```
+
+Taps the effect, printing the result of calling `.toString` on the value.
+
+## Retrying and Repetition
+
+### retry
+
+```scala
+def retry[R1 <: R, S](policy: => Schedule[R1, E, S]): ZIO[R1, E, A]
+```
+
+Retries this effect according to the specified schedule.
+
+### repeat
+
+```scala
+def repeat[R1 <: R, B](schedule: => Schedule[R1, A, B]): ZIO[R1, E, B]
+```
+
+Repeats this effect according to the specified schedule.
+
+## Type Aliases
+
+```scala
+type UIO[+A] = ZIO[Any, Nothing, A]          // Cannot fail, no requirements
+type URIO[-R, +A] = ZIO[R, Nothing, A]        // Cannot fail
+type Task[+A] = ZIO[Any, Throwable, A]        // Can fail with Throwable
+type RIO[-R, +A] = ZIO[R, Throwable, A]       // Requires environment, can fail with Throwable
+type IO[+E, +A] = ZIO[Any, E, A]              // No requirements
+```

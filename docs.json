@@ -1,122 +1,224 @@
 {
   "$schema": "https://mintlify.com/docs.json",
-  "theme": "mint",
-  "name": "Mint Starter Kit",
+  "name": "ZIO",
+  "theme": "aspen",
   "colors": {
-    "primary": "#16A34A",
-    "light": "#07C983",
-    "dark": "#15803D"
+    "primary": "#dcd0b4",
+    "light": "#888676",
+    "dark": "#16120e"
   },
   "favicon": "/favicon.svg",
+  "logo": {
+    "light": "https://media.brand.dev/c38d1a77-6b5a-4e73-a562-1a4beb6bdcb3.png",
+    "dark": "https://media.brand.dev/c38d1a77-6b5a-4e73-a562-1a4beb6bdcb3.png"
+  },
+  "navbar": {
+    "primary": {
+      "type": "github",
+      "href": "https://github.com/zio/zio"
+    }
+  },
+  "footer": {
+    "socials": {
+      "github": "https://github.com/zio/zio",
+      "twitter": "https://twitter.com/zioscala",
+      "discord": "https://discord.gg/2ccFBr4"
+    }
+  },
   "navigation": {
     "tabs": [
       {
-        "tab": "Guides",
+        "tab": "Documentation",
         "groups": [
           {
-            "group": "Getting started",
+            "group": "Get Started",
             "pages": [
-              "index",
+              "introduction",
               "quickstart",
-              "development"
+              "installation"
             ]
           },
           {
-            "group": "Customization",
+            "group": "Core Concepts",
             "pages": [
-              "essentials/settings",
-              "essentials/navigation"
+              "core/zio-effect",
+              "core/fibers",
+              "core/runtime",
+              "core/error-handling",
+              "core/resource-management"
             ]
           },
           {
-            "group": "Writing content",
+            "group": "Concurrency",
             "pages": [
-              "essentials/markdown",
-              "essentials/code",
-              "essentials/images",
-              "essentials/reusable-snippets"
+              "concurrency/fibers",
+              "concurrency/fiber-refs",
+              "concurrency/promise",
+              "concurrency/queue",
+              "concurrency/hub",
+              "concurrency/ref",
+              "concurrency/semaphore"
             ]
           },
           {
-            "group": "AI tools",
+            "group": "Streaming",
             "pages": [
-              "ai-tools/cursor",
-              "ai-tools/claude-code",
-              "ai-tools/windsurf"
+              "streaming/zstream",
+              "streaming/zsink",
+              "streaming/zpipeline",
+              "streaming/zchannel"
+            ]
+          },
+          {
+            "group": "STM (Software Transactional Memory)",
+            "pages": [
+              "stm/overview",
+              "stm/zstm",
+              "stm/tref",
+              "stm/tarray",
+              "stm/tmap",
+              "stm/tqueue"
+            ]
+          },
+          {
+            "group": "Services & Dependency Injection",
+            "pages": [
+              "services/zlayer",
+              "services/zenvironment",
+              "services/service-pattern"
+            ]
+          },
+          {
+            "group": "Testing",
+            "pages": [
+              "testing/overview",
+              "testing/assertions",
+              "testing/test-aspects",
+              "testing/property-testing",
+              "testing/test-services"
+            ]
+          },
+          {
+            "group": "Advanced Topics",
+            "pages": [
+              "advanced/schedule",
+              "advanced/scope",
+              "advanced/supervisor",
+              "advanced/metrics",
+              "advanced/tracing"
             ]
           }
         ]
       },
       {
-        "tab": "API reference",
+        "tab": "API Reference",
         "groups": [
           {
-            "group": "API documentation",
+            "group": "Core",
             "pages": [
-              "api-reference/introduction"
+              "api/zio",
+              "api/zio-app",
+              "api/runtime",
+              "api/exit",
+              "api/cause"
             ]
           },
           {
-            "group": "Endpoint examples",
+            "group": "Data Types",
             "pages": [
-              "api-reference/endpoint/get",
-              "api-reference/endpoint/create",
-              "api-reference/endpoint/delete",
-              "api-reference/endpoint/webhook"
+              "api/chunk",
+              "api/fiber",
+              "api/fiber-ref",
+              "api/promise",
+              "api/queue",
+              "api/hub",
+              "api/ref",
+              "api/semaphore"
+            ]
+          },
+          {
+            "group": "Streams",
+            "pages": [
+              "api/zstream",
+              "api/zsink",
+              "api/zpipeline",
+              "api/zchannel"
+            ]
+          },
+          {
+            "group": "STM",
+            "pages": [
+              "api/zstm",
+              "api/tref",
+              "api/tarray",
+              "api/tmap",
+              "api/tqueue",
+              "api/tsemaphore"
+            ]
+          },
+          {
+            "group": "Services",
+            "pages": [
+              "api/zlayer",
+              "api/zenvironment",
+              "api/clock",
+              "api/console",
+              "api/random",
+              "api/system"
+            ]
+          },
+          {
+            "group": "Testing",
+            "pages": [
+              "api/test-spec",
+              "api/test-assertion",
+              "api/test-gen",
+              "api/test-aspect"
+            ]
+          },
+          {
+            "group": "Concurrent Data Structures",
+            "pages": [
+              "api/concurrent-map",
+              "api/concurrent-set",
+              "api/countdown-latch",
+              "api/cyclic-barrier",
+              "api/reentrant-lock"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "Guides",
+        "groups": [
+          {
+            "group": "Best Practices",
+            "pages": [
+              "guides/error-handling-patterns",
+              "guides/resource-safety",
+              "guides/testing-strategies",
+              "guides/performance-optimization"
+            ]
+          },
+          {
+            "group": "Migration",
+            "pages": [
+              "guides/migration/from-cats-effect",
+              "guides/migration/from-monix",
+              "guides/migration/from-futures"
+            ]
+          },
+          {
+            "group": "Ecosystem",
+            "pages": [
+              "guides/ecosystem/zio-http",
+              "guides/ecosystem/zio-json",
+              "guides/ecosystem/zio-config",
+              "guides/ecosystem/zio-kafka"
             ]
           }
         ]
       }
-    ],
-    "global": {
-      "anchors": [
-        {
-          "anchor": "Documentation",
-          "href": "https://mintlify.com/docs",
-          "icon": "book-open-cover"
-        },
-        {
-          "anchor": "Blog",
-          "href": "https://mintlify.com/blog",
-          "icon": "newspaper"
-        }
-      ]
-    }
-  },
-  "logo": {
-    "light": "/logo/light.svg",
-    "dark": "/logo/dark.svg"
-  },
-  "navbar": {
-    "links": [
-      {
-        "label": "Support",
-        "href": "mailto:hi@mintlify.com"
-      }
-    ],
-    "primary": {
-      "type": "button",
-      "label": "Dashboard",
-      "href": "https://dashboard.mintlify.com"
-    }
-  },
-  "contextual": {
-    "options": [
-     "copy",
-     "view",
-     "chatgpt",
-     "claude",
-     "perplexity",
-     "mcp",
-     "cursor",
-     "vscode"
-   ]
-  },
-  "footer": {
-    "socials": {
-      "x": "https://x.com/mintlify",
-      "github": "https://github.com/mintlify",
-      "linkedin": "https://linkedin.com/company/mintlify"
-    }
+    ]
   }
 }

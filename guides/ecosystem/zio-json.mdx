@@ -1,0 +1,365 @@
+---
+title: 'ZIO JSON'
+description: 'Fast, type-safe JSON encoding and decoding for ZIO applications with compile-time safety and minimal boilerplate.'
+keywords: ['zio', 'json', 'serialization', 'encoder', 'decoder', 'parsing']
+---
+
+ZIO JSON is a fast, type-safe JSON library designed specifically for ZIO applications. It provides compile-time safety, excellent performance, and seamless integration with ZIO effects.
+
+## Installation
+
+Add ZIO JSON to your `build.sbt`:
+
+```scala build.sbt
+libraryDependencies += "dev.zio" %% "zio-json" % "0.7.38"
+```
+
+## Core Concepts
+
+### Encoders and Decoders
+
+ZIO JSON uses type classes `JsonEncoder` and `JsonDecoder` to define how types are converted to and from JSON.
+
+```scala
+import zio.json._
+
+case class User(name: String, age: Int, email: String)
+
+object User {
+  implicit val encoder: JsonEncoder[User] = DeriveJsonEncoder.gen[User]
+  implicit val decoder: JsonDecoder[User] = DeriveJsonDecoder.gen[User]
+}
+```
+
+<Info>
+ZIO JSON provides automatic derivation for case classes using the `DeriveJsonEncoder.gen` and `DeriveJsonDecoder.gen` macros.
+</Info>
+
+## Basic Usage
+
+### Encoding to JSON
+
+Convert Scala values to JSON strings:
+
+```scala
+import zio.json._
+
+val user = User("Alice", 30, "alice@example.com")
+val json: String = user.toJson
+// {"name":"Alice","age":30,"email":"alice@example.com"}
+```
+
+### Decoding from JSON
+
+Parse JSON strings into Scala types:
+
+```scala
+import zio.json._
+
+val jsonString = """{
+  "name": "Bob",
+  "age": 25,
+  "email": "bob@example.com"
+}"""
+
+val userResult: Either[String, User] = jsonString.fromJson[User]
+
+userResult match {
+  case Right(user) => println(s"Decoded: $user")
+  case Left(error) => println(s"Error: $error")
+}
+```
+
+### Integration with ZIO
+
+Use ZIO effects for JSON operations:
+
+```scala
+import zio._
+import zio.json._
+
+def parseUser(json: String): IO[String, User] =
+  ZIO.fromEither(json.fromJson[User])
+
+val program = for {
+  json <- ZIO.succeed("""{
+    "name": "Charlie",
+    "age": 35,
+    "email": "charlie@example.com"
+  }""")
+  user <- parseUser(json)
+  _    <- Console.printLine(s"User: ${user.name}, Age: ${user.age}")
+} yield ()
+```
+
+## Advanced Features
+
+### Custom Field Names
+
+Use `@jsonField` annotation to customize JSON field names:
+
+```scala
+import zio.json._
+
+case class Product(
+  @jsonField("product_id") id: String,
+  @jsonField("product_name") name: String,
+  price: Double
+)
+
+object Product {
+  implicit val encoder: JsonEncoder[Product] = DeriveJsonEncoder.gen[Product]
+  implicit val decoder: JsonDecoder[Product] = DeriveJsonDecoder.gen[Product]
+}
+```
+
+### Optional Fields
+
+Handle optional fields with `Option`:
+
+```scala
+import zio.json._
+
+case class UserProfile(
+  username: String,
+  bio: Option[String],
+  website: Option[String]
+)
+
+object UserProfile {
+  implicit val encoder: JsonEncoder[UserProfile] = DeriveJsonEncoder.gen[UserProfile]
+  implicit val decoder: JsonDecoder[UserProfile] = DeriveJsonDecoder.gen[UserProfile]
+}
+
+val profile = UserProfile("johndoe", Some("Software Engineer"), None)
+val json = profile.toJson
+// {"username":"johndoe","bio":"Software Engineer"}
+```
+
+### Collections and Nested Types
+
+ZIO JSON automatically handles collections and nested structures:
+
+```scala
+import zio.json._
+
+case class Address(street: String, city: String, country: String)
+case class Company(name: String, employees: List[User], address: Address)
+
+object Address {
+  implicit val encoder: JsonEncoder[Address] = DeriveJsonEncoder.gen[Address]
+  implicit val decoder: JsonDecoder[Address] = DeriveJsonDecoder.gen[Address]
+}
+
+object Company {
+  implicit val encoder: JsonEncoder[Company] = DeriveJsonEncoder.gen[Company]
+  implicit val decoder: JsonDecoder[Company] = DeriveJsonDecoder.gen[Company]
+}
+```
+
+## Custom Encoders and Decoders
+
+### Manual Implementation
+
+Define custom encoding and decoding logic:
+
+```scala
+import zio.json._
+import zio.json.ast._
+import java.time.Instant
+
+case class Event(name: String, timestamp: Instant)
+
+object Event {
+  implicit val instantEncoder: JsonEncoder[Instant] =
+    JsonEncoder[Long].contramap(_.toEpochMilli)
+
+  implicit val instantDecoder: JsonDecoder[Instant] =
+    JsonDecoder[Long].map(Instant.ofEpochMilli)
+
+  implicit val encoder: JsonEncoder[Event] = DeriveJsonEncoder.gen[Event]
+  implicit val decoder: JsonDecoder[Event] = DeriveJsonDecoder.gen[Event]
+}
+```
+
+### Sum Types (ADTs)
+
+Handle sealed traits and algebraic data types:
+
+```scala
+import zio.json._
+
+sealed trait Status
+case object Active extends Status
+case object Inactive extends Status
+case class Pending(reason: String) extends Status
+
+object Status {
+  implicit val encoder: JsonEncoder[Status] = DeriveJsonEncoder.gen[Status]
+  implicit val decoder: JsonDecoder[Status] = DeriveJsonDecoder.gen[Status]
+}
+```
+
+<Tip>
+ZIO JSON automatically handles discriminated unions for sealed traits, making it easy to work with sum types.
+</Tip>
+
+## Streaming JSON
+
+Process large JSON files with ZIO Streams:
+
+```scala
+import zio._
+import zio.json._
+import zio.stream._
+
+case class Record(id: Int, data: String)
+
+object Record {
+  implicit val decoder: JsonDecoder[Record] = DeriveJsonDecoder.gen[Record]
+}
+
+def processJsonStream(lines: Stream[Throwable, String]): ZStream[Any, String, Record] =
+  lines.mapZIO { line =>
+    ZIO.fromEither(line.fromJson[Record])
+  }
+```
+
+## Integration with ZIO HTTP
+
+Combine ZIO JSON with ZIO HTTP for type-safe APIs:
+
+```scala
+import zio._
+import zio.http._
+import zio.json._
+
+case class CreateUserRequest(name: String, email: String)
+case class UserResponse(id: String, name: String, email: String)
+
+object CreateUserRequest {
+  implicit val decoder: JsonDecoder[CreateUserRequest] = DeriveJsonDecoder.gen[CreateUserRequest]
+}
+
+object UserResponse {
+  implicit val encoder: JsonEncoder[UserResponse] = DeriveJsonEncoder.gen[UserResponse]
+}
+
+val routes = Routes(
+  Method.POST / "users" -> handler { (req: Request) =>
+    for {
+      body    <- req.body.asString
+      request <- ZIO.fromEither(body.fromJson[CreateUserRequest]).mapError(e => Response.text(e).status(Status.BadRequest))
+      userId  <- Random.nextUUID.map(_.toString)
+      response = UserResponse(userId, request.name, request.email)
+    } yield Response.json(response.toJson)
+  }
+)
+```
+
+## Error Handling
+
+<AccordionGroup>
+  <Accordion title="Decoding Errors">
+    Handle JSON parsing errors with descriptive messages:
+
+    ```scala
+    val result = jsonString.fromJson[User]
+    result match {
+      case Right(user) => println(s"Success: $user")
+      case Left(error) => println(s"Failed to parse: $error")
+    }
+    ```
+  </Accordion>
+
+  <Accordion title="Validation">
+    Add validation logic after decoding:
+
+    ```scala
+    def validateUser(user: User): IO[String, User] =
+      if (user.age < 0) ZIO.fail("Age cannot be negative")
+      else if (user.email.isEmpty) ZIO.fail("Email is required")
+      else ZIO.succeed(user)
+
+    val program = for {
+      user     <- parseUser(json)
+      validated <- validateUser(user)
+    } yield validated
+    ```
+  </Accordion>
+
+  <Accordion title="Pretty Printing">
+    Format JSON output for readability:
+
+    ```scala
+    val user = User("Alice", 30, "alice@example.com")
+    val prettyJson = user.toJsonPretty
+    // {
+    //   "name": "Alice",
+    //   "age": 30,
+    //   "email": "alice@example.com"
+    // }
+    ```
+  </Accordion>
+</AccordionGroup>
+
+## Performance Considerations
+
+<Warning>
+ZIO JSON is optimized for performance, but be mindful of:
+- Large payloads: Use streaming for files over 10MB
+- Deep nesting: Keep JSON structures reasonably flat
+- Custom encoders: Avoid expensive computations in encoding logic
+</Warning>
+
+## Testing
+
+Test JSON encoding and decoding:
+
+```scala
+import zio.test._
+import zio.json._
+
+object UserJsonSpec extends ZIOSpecDefault {
+  def spec = suite("User JSON"(
+    test("encode and decode User") {
+      val user = User("Alice", 30, "alice@example.com")
+      val json = user.toJson
+      val decoded = json.fromJson[User]
+      
+      assertTrue(decoded == Right(user))
+    },
+    test("handle invalid JSON") {
+      val invalid = "{invalid json}"
+      val result = invalid.fromJson[User]
+      
+      assertTrue(result.isLeft)
+    }
+  )
+}
+```
+
+## Additional Resources
+
+<CardGroup cols={2}>
+  <Card title="ZIO JSON Documentation" icon="book" href="https://zio.dev/zio-json/">
+    Official ZIO JSON documentation
+  </Card>
+  <Card title="GitHub Repository" icon="github" href="https://github.com/zio/zio-json">
+    Source code and examples
+  </Card>
+</CardGroup>
+
+## Next Steps
+
+<Steps>
+  <Step title="Explore Schema Integration">
+    Use ZIO Schema for automatic JSON codec derivation with validation.
+  </Step>
+  <Step title="Build Type-Safe APIs">
+    Combine ZIO JSON with ZIO HTTP for fully type-safe REST APIs.
+  </Step>
+  <Step title="Optimize Performance">
+    Profile your JSON operations and apply streaming for large datasets.
+  </Step>
+</Steps>

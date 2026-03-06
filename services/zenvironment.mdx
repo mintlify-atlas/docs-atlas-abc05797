@@ -1,0 +1,357 @@
+---
+title: 'ZEnvironment'
+description: 'Type-safe container for application services'
+icon: 'box'
+---
+
+# ZEnvironment
+
+A `ZEnvironment[R]` is a type-safe, immutable container for services. It serves as the underlying data structure for ZIO's dependency injection system, storing service instances that effects can access.
+
+## Overview
+
+While you'll typically work with `ZLayer` for dependency injection, understanding `ZEnvironment` helps you grasp how ZIO manages services at runtime.
+
+```scala
+final class ZEnvironment[+R] private (
+  private val map: UpdateOrderLinkedMap[LightTypeTag, Any],
+  private val cache: ConcurrentHashMap[LightTypeTag, Any],
+  private val scope: Scope
+)
+```
+
+<Note>
+**You rarely construct `ZEnvironment` directly.** Use `ZLayer` for building services and let ZIO manage the environment internally.
+</Note>
+
+## Key Features
+
+<CardGroup cols={2}>
+  <Card title="Type-Safe Access" icon="shield-check">
+    Services are stored and retrieved using type tags, ensuring type safety at runtime
+  </Card>
+  <Card title="Efficient Lookup" icon="gauge-high">
+    Cached lookups provide O(1) access after first retrieval
+  </Card>
+  <Card title="Immutable" icon="lock">
+    Adding or updating services creates a new environment
+  </Card>
+  <Card title="Composable" icon="puzzle-piece">
+    Combine environments with union operations
+  </Card>
+</CardGroup>
+
+## Creating Environments
+
+### Empty Environment
+
+```scala
+import zio._
+
+val empty: ZEnvironment[Any] = ZEnvironment()
+```
+
+### Single Service
+
+```scala
+trait Database
+val db = new Database {}
+
+val env: ZEnvironment[Database] = ZEnvironment(db)
+```
+
+### Multiple Services
+
+```scala
+trait Database
+trait Cache
+
+val db = new Database {}
+val cache = new Cache {}
+
+val env: ZEnvironment[Database with Cache] = 
+  ZEnvironment(db, cache)
+```
+
+## Accessing Services
+
+### Type-Safe Retrieval
+
+Use `get[A]` to retrieve a service by type:
+
+```scala
+val database: Database = env.get[Database]
+```
+
+<Warning>
+If the requested service is not in the environment, `get` throws a runtime error. Use `getDynamic` for safe optional access.
+</Warning>
+
+### Optional Retrieval
+
+```scala
+val maybeDatabase: Option[Database] = env.getDynamic[Database]
+```
+
+## Modifying Environments
+
+### Adding Services
+
+Add a service with `add`:
+
+```scala
+trait Logger
+val logger = new Logger {}
+
+val newEnv: ZEnvironment[Database with Logger] = 
+  env.add[Logger](logger)
+```
+
+### Updating Services
+
+Update an existing service:
+
+```scala
+val updatedEnv = env.update[Database] { db =>
+  // Return modified database
+  db
+}
+```
+
+### Combining Environments
+
+Union two environments with `++` or `union`:
+
+```scala
+val env1: ZEnvironment[Database] = ZEnvironment(db)
+val env2: ZEnvironment[Cache] = ZEnvironment(cache)
+
+val combined: ZEnvironment[Database with Cache] = 
+  env1 ++ env2
+```
+
+<Info>
+When environments have overlapping services, `union` and `unionAll` behave differently:
+- `union` - Prunes to statically known types
+- `unionAll` - Right-hand side wins for collisions
+</Info>
+
+## Pruning
+
+Extract only the services you need:
+
+```scala
+val full: ZEnvironment[Database with Cache with Logger] = ???
+
+val subset: ZEnvironment[Database with Cache] = 
+  full.prune[Database with Cache]
+```
+
+Pruning creates a new environment containing only the specified services.
+
+## Working with ZIO Effects
+
+While `ZEnvironment` is the storage mechanism, effects access services through `ZIO.service`:
+
+```scala
+val program: ZIO[Database, Nothing, Unit] = 
+  for {
+    db <- ZIO.service[Database]
+    _  <- ZIO.succeed(db.query("SELECT * FROM users"))
+  } yield ()
+```
+
+Under the hood, `ZIO.service` retrieves the service from the `ZEnvironment` in the effect's context.
+
+## Type Aliases
+
+```scala
+type UIO[+A]        = ZIO[Any, Nothing, A]          // No requirements
+type Task[+A]       = ZIO[Any, Throwable, A]        // No requirements
+type RIO[-R, +A]    = ZIO[R, Throwable, A]          // Requires R
+type IO[+E, +A]     = ZIO[Any, E, A]                // No requirements
+type URIO[-R, +A]   = ZIO[R, Nothing, A]            // Requires R, cannot fail
+```
+
+The `R` type parameter always represents what's in the `ZEnvironment`.
+
+## Implementation Details
+
+### Efficient Storage
+
+`ZEnvironment` uses several optimizations:
+
+1. **Update-order linked map** - Maintains insertion order for deterministic behavior
+2. **Concurrent cache** - Caches type tag lookups for O(1) access
+3. **Subtype matching** - Services can be retrieved by supertypes
+
+### Scope Management
+
+The `Scope` field tracks resource lifetimes:
+
+```scala
+private val scope: Scope
+```
+
+This allows ZIO to automatically release resources when they're no longer needed.
+
+## Comparison with Other DI Approaches
+
+<AccordionGroup>
+  <Accordion title="vs Constructor Injection">
+    **Constructor Injection**: Explicit dependencies in constructors
+    
+    ```scala
+    class UserService(db: Database, cache: Cache)
+    ```
+    
+    **ZEnvironment**: Dependencies tracked in effect type
+    
+    ```scala
+    val userService: ZIO[Database with Cache, E, A]
+    ```
+    
+    ZEnvironment provides better composition and testability.
+  </Accordion>
+  
+  <Accordion title="vs Guice/Spring">
+    **Framework DI**: Runtime reflection, configuration files
+    
+    **ZEnvironment**: Compile-time type checking, no reflection
+    
+    ZEnvironment catches missing dependencies at compile time.
+  </Accordion>
+  
+  <Accordion title="vs Reader Monad">
+    **Reader**: Manual dependency threading
+    
+    **ZEnvironment**: Automatic dependency resolution with ZLayer
+    
+    ZEnvironment handles complex dependency graphs automatically.
+  </Accordion>
+</AccordionGroup>
+
+## Common Patterns
+
+### Service Locator
+
+Access multiple services:
+
+```scala
+val program: ZIO[Database with Cache with Logger, Throwable, Unit] = 
+  for {
+    db     <- ZIO.service[Database]
+    cache  <- ZIO.service[Cache]
+    logger <- ZIO.service[Logger]
+    _      <- logger.info("Starting operation")
+    data   <- db.fetch("key")
+    _      <- cache.put("key", data)
+  } yield ()
+```
+
+### Has Pattern (Legacy)
+
+<Warning>
+**Deprecated**: ZIO 2.x uses intersection types (`with`) instead of the `Has` wrapper from ZIO 1.x.
+
+```scala
+// ZIO 1.x (deprecated)
+type Env = Has[Database] with Has[Cache]
+
+// ZIO 2.x (current)
+type Env = Database with Cache
+```
+</Warning>
+
+### Test Environments
+
+Create test environments with mock services:
+
+```scala
+trait TestDatabase extends Database {
+  override def query(sql: String) = ZIO.succeed(List.empty)
+}
+
+val testEnv: ZEnvironment[Database] = 
+  ZEnvironment(new TestDatabase {})
+
+val test = program.provideEnvironment(testEnv)
+```
+
+## API Reference
+
+### Construction
+
+<ParamField path="apply()" type="ZEnvironment[Any]">
+  Create an empty environment
+</ParamField>
+
+<ParamField path="apply[A](a: A)" type="ZEnvironment[A]">
+  Create environment with single service
+</ParamField>
+
+<ParamField path="apply[A, B](a: A, b: B)" type="ZEnvironment[A with B]">
+  Create environment with multiple services (up to 5 services)
+</ParamField>
+
+### Access
+
+<ParamField path="get[A]" type="A">
+  Retrieve service by type (throws if missing)
+</ParamField>
+
+<ParamField path="getDynamic[A]" type="Option[A]">
+  Safely retrieve service, returns None if missing
+</ParamField>
+
+<ParamField path="getAt[K, V](k: K)" type="Option[V]">
+  Retrieve value from a Map service
+</ParamField>
+
+### Modification
+
+<ParamField path="add[A](a: A)" type="ZEnvironment[R with A]">
+  Add a service to the environment
+</ParamField>
+
+<ParamField path="update[A](f: A => A)" type="ZEnvironment[R]">
+  Update a service in the environment
+</ParamField>
+
+<ParamField path="updateAt[K, V](k: K)(f: V => V)" type="ZEnvironment[R]">
+  Update a value in a Map service
+</ParamField>
+
+### Combination
+
+<ParamField path="++[R1](that: ZEnvironment[R1])" type="ZEnvironment[R with R1]">
+  Combine two environments (alias for union)
+</ParamField>
+
+<ParamField path="union[R1](that: ZEnvironment[R1])" type="ZEnvironment[R with R1]">
+  Type-safe union with pruning
+</ParamField>
+
+<ParamField path="unionAll[R1](that: ZEnvironment[R1])" type="ZEnvironment[R with R1]">
+  Union without pruning (right side wins collisions)
+</ParamField>
+
+### Utilities
+
+<ParamField path="prune[R1]" type="ZEnvironment[R1]">
+  Extract subset of services
+</ParamField>
+
+<ParamField path="size" type="Int">
+  Number of services in environment
+</ParamField>
+
+<ParamField path="isEmpty" type="Boolean">
+  Check if environment is empty
+</ParamField>
+
+## See Also
+
+- [ZLayer](/services/zlayer) - High-level API for building service layers
+- [Service Pattern](/services/service-pattern) - Idiomatic patterns for defining services
+- [ZIO Effect](/core/zio-effect) - The core effect type that consumes environments
